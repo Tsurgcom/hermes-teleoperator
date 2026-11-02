@@ -47,8 +47,18 @@ def secure_path(path):
     for part in (path, *path.parents):
         if part.is_symlink():
             raise ValueError(f'Refusing symlink: {part}')
-    if path.exists() and path.stat().st_uid != os.geteuid():
-        raise ValueError(f'Not owned by current user: {path}')
+        if not part.exists():
+            continue
+        info = part.stat()
+        owners = {os.geteuid()} if part == path else {0, os.geteuid()}
+        if info.st_uid not in owners:
+            raise ValueError(f'Unsafe owner: {part}')
+        # A root-owned sticky ancestor (e.g. /tmp) protects our owned child
+        # from replacement. Never accept a writable installation leaf.
+        sticky_ancestor = (part != path and info.st_uid == 0 and
+                           part.is_dir() and info.st_mode & 0o1000)
+        if info.st_mode & 0o022 and not sticky_ancestor:
+            raise ValueError(f'Group/other writable path: {part}')
 
 
 def install(source, python, home, hermes_home, public_key=None, allow_root=False):
@@ -73,6 +83,7 @@ def install(source, python, home, hermes_home, public_key=None, allow_root=False
             if key.split()[1] in line and line != entry:
                 raise ValueError('Public key already authorised differently; use a dedicated new key')
     base.mkdir(parents=True, exist_ok=True, mode=0o700)
+    base.chmod(0o700)
     package = base / 'hermes_teleoperator'
     secure_path(package)
     if package.exists():

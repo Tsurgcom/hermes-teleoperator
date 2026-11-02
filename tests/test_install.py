@@ -70,6 +70,29 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue((home / '.local/lib/hermes-teleoperator/python').is_file())
 
+    def test_rejects_writable_install_and_ssh_ancestors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            for relative in ('.local/lib', '.ssh'):
+                unsafe = home / relative
+                unsafe.mkdir(parents=True, exist_ok=True)
+                for mode in (0o775, 0o777):
+                    unsafe.chmod(mode)
+                    with self.subTest(relative=relative, mode=mode):
+                        with self.assertRaisesRegex(ValueError, 'writable'):
+                            installer.secure_path(unsafe / 'new-child')
+                unsafe.chmod(0o755)
+                installer.secure_path(unsafe / 'new-child')
+
+    @unittest.skipUnless(os.geteuid() == 0, 'owner fixture requires root')
+    def test_rejects_foreign_owned_parent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            foreign = Path(tmp) / 'foreign'
+            foreign.mkdir()
+            os.chown(foreign, 65534, 65534)
+            with self.assertRaisesRegex(ValueError, 'owner'):
+                installer.secure_path(foreign / 'child')
+
     def test_rejects_bad_keys_and_unsafe_authorized_keys(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
