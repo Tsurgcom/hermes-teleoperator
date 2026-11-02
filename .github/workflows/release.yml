@@ -3,10 +3,14 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+
 permissions:
   contents: read
+
 jobs:
-  binary:
+  # Full behavioural proof: gateway protocol, file transfer, skills, real SSH,
+  # clean chroot. Runs on the reference targets only so the matrix stays cheap.
+  test:
     runs-on: [self-hosted, Linux, X64, teleoperator]
     strategy:
       fail-fast: false
@@ -53,24 +57,138 @@ jobs:
           result = unittest.TextTestRunner(verbosity=2).run(selected)
           sys.exit(not result.wasSuccessful())
           PY
-      - name: Stage static binaries
+
+  # musl = fully static, no libc on the destination.
+  # glibc = dynamic, pinned to a glibc 2.17 symbol floor so it also runs on
+  # RHEL/CentOS 7-era systems. Same source, two linkage models.
+  binary-linux:
+    needs: test
+    runs-on: [self-hosted, Linux, X64, teleoperator]
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            libc: musl
+          - target: aarch64-unknown-linux-musl
+            libc: musl
+          - target: armv7-unknown-linux-musleabihf
+            libc: musl
+          - target: i686-unknown-linux-musl
+            libc: musl
+          - target: riscv64gc-unknown-linux-musl
+            libc: musl
+          - target: x86_64-unknown-linux-gnu
+            libc: glibc
+            glibc: "2.17"
+          - target: aarch64-unknown-linux-gnu
+            libc: glibc
+            glibc: "2.17"
+          - target: armv7-unknown-linux-gnueabihf
+            libc: glibc
+            glibc: "2.17"
+          - target: i686-unknown-linux-gnu
+            libc: glibc
+            glibc: "2.17"
+          - target: powerpc64le-unknown-linux-gnu
+            libc: glibc
+            # zig has no glibc older than 2.19 for ppc64le
+            glibc: "2.19"
+          - target: s390x-unknown-linux-gnu
+            libc: glibc
+            glibc: "2.17"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+      - name: Build (${{ matrix.libc }})
+        run: |
+          set -eu
+          if [ "${{ matrix.libc }}" = "glibc" ]; then
+            cargo zigbuild --locked --release --manifest-path receiver/Cargo.toml \
+              --target "${{ matrix.target }}.${{ matrix.glibc }}"
+          else
+            cargo zigbuild --locked --release --manifest-path receiver/Cargo.toml \
+              --target "${{ matrix.target }}"
+          fi
+      - name: Verify linkage
+        run: |
+          set -eu
+          binary="receiver/target/${{ matrix.target }}/release/hermes-teleoperator-receiver"
+          test -f "$binary"
+          file "$binary"
+          if [ "${{ matrix.libc }}" = "musl" ]; then
+            if readelf -l "$binary" | grep -q INTERP; then
+              echo 'musl release binary unexpectedly requires a dynamic interpreter' >&2
+              exit 1
+            fi
+            echo 'musl: static, no PT_INTERP'
+          else
+            if ! readelf -l "$binary" | grep -q INTERP; then
+              echo 'glibc release binary is unexpectedly static' >&2
+              exit 1
+            fi
+            floor=$(objdump -T "$binary" | grep -o 'GLIBC_[0-9.]*' | sort -u -V | tail -1 | sed 's/^GLIBC_//')
+            echo "highest glibc symbol required: ${floor}"
+            awk -v f="$floor" -v floor="${{ matrix.glibc }}" 'BEGIN { split(f, a, "."); split(floor, b, "."); exit !(a[1] < b[1] || (a[1] == b[1] && a[2] <= b[2])) }' \
+              || { echo "binary needs glibc newer than the ${{ matrix.glibc }} floor" >&2; exit 1; }
+          fi
+      - name: Stage binaries
         run: |
           mkdir -p artifacts
-          binary=receiver/target/${{ matrix.target }}/release/hermes-teleoperator-receiver
-          file "$binary"
-          if readelf -l "$binary" | grep -q INTERP; then
-            echo 'Release binary unexpectedly requires a dynamic interpreter' >&2
-            exit 1
-          fi
-          cp "$binary" artifacts/hermes-teleoperator-receiver-${{ matrix.target }}
+          cp "receiver/target/${{ matrix.target }}/release/hermes-teleoperator-receiver" \
+             "artifacts/hermes-teleoperator-receiver-${{ matrix.target }}"
+          ls -l artifacts
       - uses: actions/upload-artifact@v4
         with:
           name: receiver-${{ matrix.target }}
           path: artifacts/*
           if-no-files-found: error
+
+  # macOS needs a macOS linker and SDK, so it builds on a hosted arm64 runner.
+  binary-apple:
+    needs: test
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --locked --release --manifest-path receiver/Cargo.toml --target ${{ matrix.target }}
+      - name: Verify linkage
+        run: |
+          set -eu
+          binary="receiver/target/${{ matrix.target }}/release/hermes-teleoperator-receiver"
+          test -f "$binary"
+          file "$binary"
+          otool -L "$binary" | head -5
+      - name: Stage binaries
+        run: |
+          mkdir -p artifacts
+          cp "receiver/target/${{ matrix.target }}/release/hermes-teleoperator-receiver" \
+             "artifacts/hermes-teleoperator-receiver-${{ matrix.target }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: receiver-${{ matrix.target }}
+          path: artifacts/*
+          if-no-files-found: error
+
   publish:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: binary
+    needs: [binary-linux, binary-apple]
     runs-on: [self-hosted, Linux, X64, teleoperator]
     permissions:
       contents: write
@@ -80,13 +198,18 @@ jobs:
           pattern: receiver-*
           merge-multiple: true
           path: artifacts
-      - run: cd artifacts && sha256sum hermes-teleoperator-receiver-* > SHA256SUMS
+      - run: cd artifacts && sha256sum hermes-teleoperator-receiver-* > SHA256SUMS && cat SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
           draft: true
           files: artifacts/*
           body: |
             Standalone Rust receiver. No Hermes, Python, Bun or Node installation required on the destination.
-            Linux x86_64/aarch64 static musl binaries. SHA256SUMS verifies release bytes; it is not a publisher signature.
-            Built and tested on the Teleoperator self-hosted runner; aarch64 receiver tests use QEMU, not physical ARM hardware.
-            Draft pending release-download and installer verification.
+
+            `*-linux-musl`: fully static. No libc, no dynamic loader on the destination.
+            `*-linux-gnu`: dynamically linked, pinned to glibc 2.17, so they run on any distro with glibc 2.17 or newer (RHEL/CentOS 7 and up).
+            `*-apple-darwin`: macOS binaries; unsigned and not notarised, so Gatekeeper needs an override.
+
+            SHA256SUMS verifies release bytes; it is not a publisher signature.
+
+            Built on the Teleoperator self-hosted runner (Linux) and a hosted macOS arm64 runner. Only x86_64/aarch64 Linux plus native Rust tests are executed; other architectures are cross-compiled and the macOS binaries are built but not tested. Windows is not shipped: the receiver is Unix-only by design (openat/linkat/renameat file handling, Unix sockets, POSIX process groups, Bash).

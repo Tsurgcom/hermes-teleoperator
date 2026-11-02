@@ -23,11 +23,21 @@ The model and conversation stay on the gateway. The receiver provides shell, fil
 
 Gateway: Hermes with documented plugin/tool-execution middleware, Python 3.11+, OpenSSH client.
 
-Linux x86_64 or aarch64 (static musl), OpenSSH server, Bash and the standalone binary. Installation uses Bash, curl, GNU coreutils and OpenSSH's ssh-keygen when enrolling a key. No language toolchain is needed. Windows and macOS binaries are not shipped yet.
+Linux x86_64, aarch64, armv7, i686, riscv64, ppc64le or s390x, macOS 11+ on x86_64 or arm64, an OpenSSH server, Bash and the standalone binary. Installation uses Bash, curl, GNU coreutils and OpenSSH's ssh-keygen when enrolling a key. No language toolchain is needed. Windows is not supported: the receiver is Unix-only by design (openat/linkat/renameat file handling, Unix sockets, POSIX process groups, Bash).
 
 Measured x86_64 musl release build on Linux 7.0.14, 2 vCPU: 2.3 MiB static binary, about 0.5 ms from spawn to first response, roughly 1.4 MiB RSS including its idle Bash shell after 20 commands. Those are `scripts/measure_receiver.py` results, not a comparison against Python/Bun, and exclude SSH and MCP server processes. The receiver exits at stdin EOF; it is not a resident daemon.
 
-Release targets are `x86_64-unknown-linux-musl` (2.3 MiB) and `aarch64-unknown-linux-musl` (1.9 MiB), each statically linked with no interpreter. The self-hosted Actions runner builds both without Docker or binfmt registration. The x86_64 release runs the full gateway, real-SSH and clean-chroot tests. The aarch64 release runs 8 receiver tests under `qemu-aarch64-static`, covering shell state, skills, files, transfers and cleanup. Its clean-chroot test is excluded because the host QEMU wrapper is deliberately absent from that jail. Physical ARM hardware, Windows and macOS are not tested; emulated timings are not representative.
+## Release targets, libc and linkage
+
+Two linkage models ship for Linux from the same source, because "which libc" is the thing that decides whether a binary runs on an old server:
+
+- **musl, fully static** — no libc, no dynamic loader, no interpreter on the destination. `x86_64`, `aarch64`, `armv7` (musleabihf), `i686`, `riscv64gc`.
+- **glibc, dynamic** — linked against a **glibc 2.17 symbol floor**, so it also runs on RHEL/CentOS 7-era systems and anything newer. `x86_64`, `aarch64`, `armv7` (gnueabihf), `i686`, `s390x`. `powerpc64le` uses a **2.19 floor** because zig has no older glibc for that ABI. Pick these when a distro policy wants dynamic binaries or when the host must share a glibc-versioned toolchain.
+- **macOS** — `aarch64-apple-darwin` and `x86_64-apple-darwin`. Unsigned and not notarised, so Gatekeeper needs an override.
+
+The static musl binary is the default recommendation and what `install.sh` downloads. The glibc floor is enforced in CI: the release job fails if any `GLIBC_*` symbol in a dynamic binary is newer than that target's floor (2.17, or 2.19 for ppc64le).
+
+Test coverage per target is not uniform, and the release notes say so. The full gateway protocol, file transfer, skills, real-SSH and clean-chroot suites run on `x86_64-unknown-linux-musl`. `aarch64-unknown-linux-musl` runs 8 receiver tests under `qemu-aarch64-static` (its clean-chroot test is excluded because the host QEMU wrapper is deliberately absent from that jail). Every other Linux target is cross-compiled and only checked for linkage (`PT_INTERP` present/absent and the glibc floor); macOS binaries are built on a macOS runner but not executed in CI. Emulated timings are not representative.
 
 Version 1.1 replaces the old Python/Hermes receiver. Old `python`/`hermes_home` machine settings are rejected with a migration error, never silently used. The marketplace submission is on hold until the standalone version is validated and pinned.
 
