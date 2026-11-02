@@ -1,4 +1,5 @@
 import unittest
+from hermes_teleoperator.version import VERSION
 from hermes_teleoperator.controller import Controller
 
 
@@ -8,7 +9,7 @@ class Peer:
     def call(self, method, params=None):
         self.calls.append((method, params))
         if method == 'ping':
-            return {'protocol': 2, 'hostname': self.name, 'cwd': '/work/' + self.name}
+            return {'protocol': 2, 'version': VERSION, 'hostname': self.name, 'cwd': '/work/' + self.name}
         if method == 'tool':
             return {'content': self.name}
         raise RuntimeError('disconnected')
@@ -105,6 +106,37 @@ class ControllerTests(unittest.TestCase):
         c.switch('s', 'alpha')
         with self.assertRaisesRegex(ValueError, 'not exposed'):
             c.call('s', 'tool', {'name': 'execute_code', 'arguments': {}})
+
+    def test_receiver_version_must_match_gateway_before_selection(self):
+        from hermes_teleoperator.version import VERSION
+        for reported in (None, '0.0.0', VERSION + '-other', 123, {'bad': True}):
+            with self.subTest(reported=reported):
+                class VersionPeer(Peer):
+                    def call(self, method, params=None):
+                        result = super().call(method, params)
+                        if method == 'ping':
+                            result['version'] = reported
+                        return result
+                peer = VersionPeer('alpha')
+                controller = Controller({'alpha': {'host': 'alpha'}}, lambda _: peer)
+                self.addCleanup(controller.close)
+                with self.assertRaisesRegex(ValueError, 'version mismatch'):
+                    controller.switch('version-test', 'alpha')
+                self.assertTrue(peer.closed)
+                self.assertEqual(controller.status('version-test')['active'], 'local')
+
+    def test_malformed_ping_is_rejected_and_peer_closed(self):
+        for reported in (None, [], 'not identity'):
+            with self.subTest(reported=reported):
+                class MalformedPeer(Peer):
+                    def call(self, method, params=None):
+                        return reported
+                peer = MalformedPeer('alpha')
+                controller = Controller({'alpha': {'host': 'alpha'}}, lambda _: peer)
+                self.addCleanup(controller.close)
+                with self.assertRaisesRegex(ValueError, 'identity'):
+                    controller.switch('bad-ping', 'alpha')
+                self.assertTrue(peer.closed)
 
     def test_no_shared_implicit_session(self):
         with self.assertRaises(ValueError):

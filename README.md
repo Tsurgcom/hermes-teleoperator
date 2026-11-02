@@ -35,7 +35,7 @@ Two linkage models ship for Linux from the same source, because "which libc" is 
 - **glibc, dynamic** — linked against a **glibc 2.17 symbol floor**, so it also runs on RHEL/CentOS 7-era systems and anything newer. `x86_64`, `aarch64`, `armv7` (gnueabihf), `i686`, `s390x`. `powerpc64le` uses a **2.19 floor** because zig has no older glibc for that ABI. Pick these when a distro policy wants dynamic binaries or when the host must share a glibc-versioned toolchain.
 - **macOS** — `aarch64-apple-darwin` and `x86_64-apple-darwin`. Unsigned and not notarised, so Gatekeeper needs an override.
 
-The static musl binary is the default recommendation. `install.sh` currently auto-downloads Linux x86_64/aarch64 only; other Linux builds require an explicit `--binary` and trusted `--sha256`. The installer is Linux-only and uses GNU utilities: macOS assets require manual installation, not `install.sh`. The glibc floor is enforced in CI: the release job fails if any `GLIBC_*` symbol in a dynamic binary is newer than that target's floor (2.17, or 2.19 for ppc64le).
+The static musl binary is the default recommendation. `install.sh` currently auto-downloads Linux x86_64/aarch64 only; other Linux builds require an explicit `--binary` and trusted `--sha256`. The target-side installer is Linux-only and uses GNU utilities; use the gateway-led deployment helper for macOS. The glibc floor is enforced in CI: the release job fails if any `GLIBC_*` symbol in a dynamic binary is newer than that target's floor (2.17, or 2.19 for ppc64le).
 
 Test coverage per target is not uniform, and the release notes say so. The full gateway protocol, file transfer, skills, real-SSH and clean-chroot suites run on `x86_64-unknown-linux-musl`. `aarch64-unknown-linux-musl` runs 8 receiver tests under `qemu-aarch64-static` (its clean-chroot test is excluded because the host QEMU wrapper is deliberately absent from that jail). Every other Linux target is cross-compiled and only checked for linkage (`PT_INTERP` present/absent and the glibc floor); macOS binaries are built on a macOS runner but not executed in CI. Emulated timings are not representative.
 
@@ -58,6 +58,28 @@ Configure and verify normal SSH first. Verify the host fingerprint through a tru
 
 ## Receiver installation
 
+Preferred flow: run setup on the gateway, using the Python environment containing this plugin. The destination needs SSH and ordinary OS utilities, not Python or internet access.
+
+```sh
+# Read-only detection: shows the selected package, exact version and SSH identity.
+python -m hermes_teleoperator.deploy me@workstation --probe
+
+# Use a separate administrative credential for installation.
+python -m hermes_teleoperator.deploy me@workstation \
+  --identity-file "$HOME/.ssh/workstation-admin" \
+  --public-key-file "$HOME/.ssh/teleoperator-workstation.pub"
+```
+
+The helper probes the destination's actual userland ABI over strict SSH, downloads the exact gateway-matching release and SHA256SUMS onto the gateway, verifies them, then transfers bytes over SSH for offline installation. It never selects `latest`, downloads on the client, or transfers a private key. `--version v1.1.2` is optional and must match the gateway exactly. `--port`, `--known-hosts` and `--teleoperator-home` are supported. Root requires `--allow-root`; sudo-derived identity is rejected. Download checksums are from the same GitHub release, not independent publisher signatures.
+
+Selection prefers static musl on supported Linux targets, falling back to glibc only for s390x and ppc64le with proven version floors. It checks ELF word size/endianness (including 32-bit userland on a 64-bit kernel), ARM hard-float, RISC-V ISA, CPU/kernel minimums, macOS version and Rosetta. Ambiguous or unsupported combinations fail rather than guessing. A staged receiver must pass an exact version/protocol/identity handshake before the live launcher switches atomically. Existing skills, config and unrelated SSH keys are preserved; a failed transfer or staged handshake leaves the live launcher unchanged. Old content-addressed binaries are retained for inspection, not automatically pruned. Disconnect live sessions before upgrading. SSH mutations are never automatically retried; inspect ambiguous failures before rerunning.
+
+Gateway and receiver versions must match exactly when connecting. Upgrade/reload the gateway, deploy from that same environment, then reconnect. Old receivers with no version field are rejected; changing a JSON setting cannot bypass parity. Run `--probe` before mutating a target; a missing exact release asset is an error, never a fallback to an older release.
+
+The gateway generates a dedicated key with `ssh-keygen -t ed25519 -f "$HOME/.ssh/teleoperator-workstation"`. Its private key stays on the gateway; setup accepts only its `.pub` file. Keep separate administrative access: the enrolled Teleoperator key is forced to the receiver and cannot run deployment/repair shell commands.
+
+### Standalone target-side installer (alternative, Linux only)
+
 Run as the intended SSH user, not through sudo. Root is supported only with explicit `--allow-root`.
 
 Release installation, after a release containing binaries has been published:
@@ -65,7 +87,7 @@ Release installation, after a release containing binaries has been published:
 ```sh
 REF=REVIEWED_FULL_COMMIT_SHA
 curl -fsSL "https://raw.githubusercontent.com/Tsurgcom/hermes-teleoperator/$REF/install.sh" |
-  bash -s -- --version v1.1.1 \
+  bash -s -- --version v1.1.2 \
     --public-key 'ssh-ed25519 AAAA... gateway-key'
 ```
 

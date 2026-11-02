@@ -1,5 +1,5 @@
 name: hermes-teleoperator
-version: 1.1.1
+version: 1.1.2
 requires_hermes: ">=0.21.3"
 description: Switch a conversation's native tools between machines over SSH.
 provides_tools:

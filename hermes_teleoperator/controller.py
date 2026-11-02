@@ -4,6 +4,7 @@ import json
 import threading
 
 from .transport import RpcProcess, ssh_argv
+from .version import VERSION
 
 NATIVE_TOOLS = {
     'terminal', 'read_file', 'write_file', 'patch', 'search_files',
@@ -46,8 +47,12 @@ class Controller:
             try:
                 peer = self.factory(self.targets[name])
                 info = peer.call('ping')
+                if not isinstance(info, dict):
+                    raise ValueError('Invalid receiver identity: expected an object')
                 if info.get('protocol') != 2:
-                    raise ValueError('Incompatible receiver protocol; install the standalone Rust receiver (v1.1+)')
+                    raise ValueError('Incompatible receiver protocol; reinstall the matching receiver')
+                if info.get('version') != VERSION:
+                    raise ValueError(f'Receiver version mismatch: gateway {VERSION}, receiver {info.get("version")!r}; redeploy from this gateway before switching')
             except Exception:
                 # A factory that fails before returning a peer (bad config, unavailable
                 # executable) is a connection error too, not a raw ValueError/TypeError.

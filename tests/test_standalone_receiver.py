@@ -53,6 +53,8 @@ class StandaloneReceiverTests(unittest.TestCase):
         ping = self.rpc.call('ping')
         self.assertEqual(ping['protocol'], 2)
         self.assertEqual(ping['runtime'], 'standalone-rust')
+        from hermes_teleoperator.version import VERSION
+        self.assertEqual(ping.get('version'), VERSION)
         self.assertEqual(ping['home'], str(self.home))
         self.assertEqual(ping['cwd'], str(self.home))
         self.assertFalse(ping['capabilities']['native_hermes_guards'])

@@ -25,4 +25,7 @@ jobs:
         run: |
           sudo mkdir -p /run/sshd
           sudo env TELEOPERATOR_RECEIVER="$PWD/receiver/target/release/hermes-teleoperator-receiver" "$(command -v python)" -m unittest discover -s tests -p test_real_ssh.py -v
+      - name: Gateway-led deployment over real SSH
+        run: |
+          sudo env TELEOPERATOR_RECEIVER="$PWD/receiver/target/release/hermes-teleoperator-receiver" "$(command -v python)" -m unittest discover -s tests -p test_deploy.py -v
       - run: python -m pip wheel --no-deps --wheel-dir dist .
