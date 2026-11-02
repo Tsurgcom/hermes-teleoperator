@@ -81,16 +81,23 @@ jobs:
             libc: musl
           - target: x86_64-unknown-linux-gnu
             libc: glibc
+            glibc: "2.17"
           - target: aarch64-unknown-linux-gnu
             libc: glibc
+            glibc: "2.17"
           - target: armv7-unknown-linux-gnueabihf
             libc: glibc
+            glibc: "2.17"
           - target: i686-unknown-linux-gnu
             libc: glibc
+            glibc: "2.17"
           - target: powerpc64le-unknown-linux-gnu
             libc: glibc
+            # zig has no glibc older than 2.19 for ppc64le
+            glibc: "2.19"
           - target: s390x-unknown-linux-gnu
             libc: glibc
+            glibc: "2.17"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -107,7 +114,7 @@ jobs:
           set -eu
           if [ "${{ matrix.libc }}" = "glibc" ]; then
             cargo zigbuild --locked --release --manifest-path receiver/Cargo.toml \
-              --target "${{ matrix.target }}.2.17"
+              --target "${{ matrix.target }}.${{ matrix.glibc }}"
           else
             cargo zigbuild --locked --release --manifest-path receiver/Cargo.toml \
               --target "${{ matrix.target }}"
@@ -131,8 +138,8 @@ jobs:
             fi
             floor=$(objdump -T "$binary" | grep -o 'GLIBC_[0-9.]*' | sort -u -V | tail -1 | sed 's/^GLIBC_//')
             echo "highest glibc symbol required: ${floor}"
-            awk -v f="$floor" 'BEGIN { split(f, a, "."); split("2.17", b, "."); exit !(a[1] < b[1] || (a[1] == b[1] && a[2] <= b[2])) }' \
-              || { echo "binary needs glibc newer than the 2.17 floor" >&2; exit 1; }
+            awk -v f="$floor" -v floor="${{ matrix.glibc }}" 'BEGIN { split(f, a, "."); split(floor, b, "."); exit !(a[1] < b[1] || (a[1] == b[1] && a[2] <= b[2])) }' \
+              || { echo "binary needs glibc newer than the ${{ matrix.glibc }} floor" >&2; exit 1; }
           fi
       - name: Stage binaries
         run: |
