@@ -46,6 +46,15 @@ Human shortcuts: `/teleport <machine>`, `/teleport local`, `/teleport back`, `/t
 
 For a small file, use `action="transfer"` with explicit `source_machine`, `source`, `destination_machine`, `destination`, and `move=false`. Destinations must not exist; parent directories must exist. Use `move=true` only when source deletion is intended, and stop concurrent writers first.
 
+## Install and recover over SSH
+
+- For setup, use the repository README's pinned `install.sh` command on the target, or run it through existing administrative SSH access. Pass only a dedicated gateway public key with `--public-key` or `--public-key-file`; never send the private key. The installer requires an existing Hermes interpreter and prints the launcher/profile paths for the controller config.
+- Install as the intended SSH user, not via sudo. Check `id -un`, `$HOME`, the interpreter and profile first. Direct root installation requires explicit intent and `--allow-root`; do not silently change user or reuse another user's profile.
+- The enrolled key is forced to the companion and cannot run normal SSH repair commands. Keep separate administrative SSH access. Host-key verification is still required.
+- There is no daemon/service to restart: `teleoperator(action="reconnect", machine="<name>")` starts a fresh companion over SSH. This resets its shell state; inspect ambiguous mutations before retrying.
+- If reconnect fails, switch local, then use administrative SSH with `BatchMode=yes` and `StrictHostKeyChecking=yes` to check the target user and launcher. Re-run the installer if Hermes/interpreter paths changed. Do not use broad `pkill`, restart unrelated agents or relax host-key checks.
+- To smoke-test transport using the dedicated key: pipe `{"id":"health","method":"ping"}` plus a newline into `ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes -i <gateway-key> <user@host> '<absolute-launcher> -m hermes_teleoperator.companion'`. Check identity, then reconnect and run a harmless native `pwd`; ping alone does not load Hermes tools.
+
 ## Pitfalls and verification
 
 - A failed/disconnected remote remains selected. Never retry a possibly executed mutation blindly; inspect the outcome, then explicitly reconnect or switch local. There is no local fallback.

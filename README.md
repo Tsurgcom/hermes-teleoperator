@@ -84,6 +84,60 @@ Do not put tokens here. Existing profile credentials stay on that computer. MCP 
 
 Each exposed server must also explicitly set `sampling.enabled: false` in its existing remote Hermes MCP configuration. Teleoperator refuses discovery otherwise, so an MCP server cannot request extra model inference through Hermes sampling. For example, use `hermes config set mcp_servers.github.sampling.enabled false` on the destination. Portable-plugin-only MCP definitions are not exposed by this version; the server must be present in the profile's merged `mcp_servers` configuration.
 
+## Quick destination setup
+
+Generate a dedicated key on the gateway (do not overwrite an existing key):
+
+```sh
+ssh-keygen -t ed25519 -f "$HOME/.ssh/teleoperator-workstation" -C hermes-teleoperator
+```
+
+The private key stays on the gateway. Give the installer only the `.pub` contents. Use an SSH agent if the key has a passphrase; Teleoperator authentication is noninteractive.
+
+Run this on the destination as the intended SSH user. Replace `COMMIT_SHA` with a reviewed full commit SHA from this repository, and the Python path with the destination's existing Hermes interpreter:
+
+```sh
+REF=COMMIT_SHA
+curl -fsSL "https://raw.githubusercontent.com/tsurgcom/hermes-teleoperator/$REF/install.sh" |
+  bash -s -- --ref "$REF" --python /absolute/hermes/venv/bin/python \
+    --public-key 'ssh-ed25519 AAAA... gateway-key' \
+    --hermes-home "$HOME/.hermes"
+```
+
+The script itself uses stdin, so the public key is an argument (or use `--public-key-file /path/to/gateway.pub`), not a second stream piped into bash. Never pass a private key. For inspection first, download `install.sh`, read it, then invoke `bash install.sh` with the same arguments. This bootstrap trusts GitHub HTTPS and the pinned revision; signed release verification is not implemented.
+
+The installer copies the companion under `~/.local/lib/hermes-teleoperator`, checks the existing Hermes interpreter, and prints configuration fields. It does not install Hermes, change its packages, enable remote plugins, touch MCP configuration, or start a daemon. Re-running updates the companion; disconnect active sessions before upgrading.
+
+It adds the dedicated public key to `~/.ssh/authorized_keys` with `restrict` and a forced companion command. Ordinary shell commands using this key always launch the companion instead; use your separate administrative SSH access for setup/repair. This restricts connection entry, not the commands the companion can execute with the SSH user's authority. A key already authorised differently is rejected rather than silently left unrestricted. OpenSSH 7.2+ is required for `restrict`.
+
+Set the controller's machine `python` field to the emitted launcher path (`/home/me/.local/lib/hermes-teleoperator/python`), `identity_file` to the gateway private-key path, and `host` to the same target user. Verify its SSH host fingerprint separately before connecting.
+
+For agent-assisted setup, use existing verified administrative SSH access to run the same installer remotely. Do not use the restricted Teleoperator key for installation. Confirm `id -un`, `$HOME`, the Hermes interpreter and profile before writing. Do not pipe through `sudo`: the installer rejects `SUDO_USER`; deliberate direct root installs require `--allow-root`. A normal-user install cannot be reused as a root install by changing only `user@host`.
+
+### Restart and recovery
+
+There is no systemd service to restart. `/teleport reconnect workstation` closes the old channel and starts a fresh companion through SSH. Shell state is reset; do not replay a failed mutation without checking whether it ran.
+
+If reconnect fails, switch local and diagnose with the separate administrative SSH credential:
+
+```sh
+ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes me@workstation \
+  'id -un; printf "%s\\n" "$HOME"; test -x "$HOME/.local/lib/hermes-teleoperator/python"'
+```
+
+A protocol smoke test also works with the restricted key (the forced command reads the request):
+
+```sh
+printf '%s\n' '{"id":"health","method":"ping"}' |
+  ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes \
+    -i "$HOME/.ssh/teleoperator-workstation" me@workstation \
+    '/home/me/.local/lib/hermes-teleoperator/python -m hermes_teleoperator.companion'
+```
+
+A ping checks transport/identity only. After reconnect, check a harmless native tool such as `pwd` to verify Hermes dependencies too. If the interpreter moved or Hermes changed, disconnect, rerun the installer through administrative SSH with the correct interpreter/profile, then reconnect. Never use broad `pkill python`, restart unrelated Hermes agents, or disable host-key checking.
+
+To uninstall: disconnect, remove only this key's `hermes-teleoperator` line from `authorized_keys`, then delete `~/.local/lib/hermes-teleoperator` and its controller machine entry. Keep unrelated keys, Hermes and profiles intact.
+
 ## Use
 
 ```text

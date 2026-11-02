@@ -144,6 +144,25 @@ for name, args in [('teleoperator', {'action': 'switch', 'machine': 'beta'}), ('
                 self.assertEqual(frames[2]['teleoperator']['machine'], 'beta')
                 self.assertIn(str(root / 'beta'), json.dumps(frames[2]))
                 self.assertEqual(frames[3]['active'], 'local')
+                # Install a real user-local companion and enrol a forced-command key.
+                install_home = root / 'installed-home'
+                install_home.mkdir()
+                installed = subprocess.run([PYTHON, str(ROOT / 'scripts/install.py'),
+                    '--python', PYTHON, '--hermes-home', str(root / 'alpha'),
+                    '--public-key-file', str(root / 'clientkey.pub'), '--allow-root'],
+                    env={k: v for k, v in {**os.environ, 'HOME': str(install_home)}.items() if k != 'SUDO_USER'},
+                    capture_output=True, text=True, timeout=30)
+                self.assertEqual(installed.returncode, 0, installed.stderr)
+                installation = json.loads(installed.stdout)
+                authorized.write_text((install_home / '.ssh/authorized_keys').read_text())
+                forced = {**targets['alpha'], 'python': installation['python']}
+                with Controller({'installed': forced}) as c:
+                    c.switch('installed-session', 'installed')
+                    output = c.call('installed-session', 'tool', {'name': 'terminal', 'arguments': {'command': 'printf INSTALLED_OK'}})
+                    self.assertIn('INSTALLED_OK', json.dumps(output))
+                    c.disconnect('installed-session')
+                    c.reconnect('installed-session')
+                    self.assertEqual(c.status('installed-session')['active'], 'installed')
                 # A different, pinned host key must fail rather than enroll or prompt.
                 known.write_text(f'[127.0.0.1]:{port} ' + (root / 'clientkey.pub').read_text())
                 with Controller(targets) as c:

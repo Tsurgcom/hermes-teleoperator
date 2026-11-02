@@ -4,3 +4,9 @@ __pycache__/
 build/
 dist/
 .venv/
+.env
+.env.*
+!.env.example
+*.pem
+id_ed25519
+id_rsa
