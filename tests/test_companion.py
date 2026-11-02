@@ -10,6 +10,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class CompanionTests(unittest.TestCase):
+    def test_mcp_sampling_must_be_explicitly_disabled(self):
+        from hermes_teleoperator.runtime import validate_mcp_config
+        with self.assertRaisesRegex(ValueError, 'sampling'):
+            validate_mcp_config({'fixture': {'command': 'python3'}}, ['fixture'])
+        allowed = validate_mcp_config({'fixture': {'sampling': {'enabled': False}}, 'other': {}}, ['fixture'])
+        self.assertEqual(allowed, ['fixture'])
+
     def test_malformed_frame_returns_error_and_next_request_works(self):
         import io
         from hermes_teleoperator.companion import Companion, serve

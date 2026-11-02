@@ -86,7 +86,7 @@ for line in sys.stdin:
                     skill.mkdir(parents=True)
                     (skill / 'SKILL.md').write_text(f'---\nname: {name}-skill\ndescription: Host-specific test.\n---\n{name.upper()}_SKILL\n')
                     (home / 'config.yaml').write_text(json.dumps({'terminal': {'backend': 'local', 'cwd': str(home)},
-                        'mcp_servers': {'fixture': {'command': PYTHON, 'args': [str(mcp_server)]}}}))
+                        'mcp_servers': {'fixture': {'command': PYTHON, 'args': [str(mcp_server)], 'sampling': {'enabled': False}}}}))
                     (home / 'teleoperator.json').write_text(json.dumps({'expose_mcp': ['fixture']}))
                     targets[name] = {'host': 'root@127.0.0.1', 'port': port,
                         'python': str(wrapper), 'hermes_home': str(home),

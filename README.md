@@ -82,6 +82,8 @@ On a destination, remote MCP access is OFF by default. To grant selected MCP ser
 
 Do not put tokens here. Existing profile credentials stay on that computer. MCP tool trust/approval behavior remains Hermes-owned; an approval requiring an interactive remote UI may be denied because the companion has no human input channel. This version does not forward interactive approval prompts.
 
+Each exposed server must also explicitly set `sampling.enabled: false` in its existing remote Hermes MCP configuration. Teleoperator refuses discovery otherwise, so an MCP server cannot request extra model inference through Hermes sampling. For example, use `hermes config set mcp_servers.github.sampling.enabled false` on the destination. Portable-plugin-only MCP definitions are not exposed by this version; the server must be present in the profile's merged `mcp_servers` configuration.
+
 ## Use
 
 ```text
@@ -129,7 +131,7 @@ Parent directories must exist. A destination is created atomically and must not 
 - Local memory, browser sessions, calendar/email connectors, cron, delegation, and model execution are not migrated.
 - Web search/extract and human clarification remain local. Unsupported tools (including `execute_code` and browser/computer tools) are blocked while remote rather than silently run on the controller. Switch local to use them.
 - Native tool guards remain in the execution paths, but this is not a sandbox. SSH grants the destination user's full OS authority, and arbitrary terminal commands can access its data. Use an appropriately scoped SSH account.
-- The companion itself exposes only native file/shell/skill/process tools and explicitly permitted MCP servers. It does not spawn an LLM or load arbitrary user plugins.
+- The companion itself exposes only native file/shell/skill/process tools and explicitly permitted MCP servers. It does not launch a conversation agent. Importing Hermes' native dispatcher also loads plugins enabled in the destination profile: those plugins can run code or register hooks, so use a dedicated remote profile if that is undesirable. Exposed MCP servers must have sampling disabled. Skill loading retains native preprocessing/dependency behavior and is not guaranteed read-only.
 - Restarts begin local; machine selection lives only in the conversation's current process. The controller's `back` history is one previous machine, not a navigation stack.
 
 ## Verify

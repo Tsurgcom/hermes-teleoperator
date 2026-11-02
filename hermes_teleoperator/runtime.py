@@ -7,6 +7,16 @@ import uuid
 from .controller import NATIVE_TOOLS
 
 
+def validate_mcp_config(servers, names):
+    for name in names:
+        server = servers.get(name)
+        if not isinstance(server, dict):
+            raise ValueError(f'MCP server must be configured in this profile: {name}')
+        if (server.get('sampling') or {}).get('enabled') is not False:
+            raise ValueError(f'MCP {name}: set sampling.enabled=false for LLM-free companion operation')
+    return list(names)
+
+
 class HermesRuntime:
     def __init__(self):
         os.environ['HERMES_TELEOPERATOR_COMPANION'] = '1'
@@ -28,6 +38,8 @@ class HermesRuntime:
     def _mcp(self):
         if not self.mcp_loaded:
             if self.expose_mcp:
+                from hermes_cli.config import load_config
+                validate_mcp_config(load_config().get('mcp_servers', {}), self.expose_mcp)
                 from tools.mcp_tool_discovery import discover_mcp_tools
                 self.mcp_names = set(discover_mcp_tools(allowed_mcp_names=self.expose_mcp))
             self.mcp_loaded = True
@@ -71,6 +83,14 @@ class HermesRuntime:
         return {'tools': [s for s in self.catalog() if all(w in json.dumps(s).lower() for w in words)][:30]}
 
     def close(self):
-        if self.mcp_loaded and self.expose_mcp:
-            from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-            shutdown_mcp_servers()
+        try:
+            if self.mcp_loaded and self.expose_mcp:
+                from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+                shutdown_mcp_servers()
+        finally:
+            try:
+                from tools.terminal_tool_lifecycle import cleanup_all_environments
+                cleanup_all_environments()
+            finally:
+                from hermes_cli.plugins import get_plugin_manager
+                get_plugin_manager().unload()
