@@ -651,6 +651,24 @@ mod tests {
         }
     }
 
+    /// Deterministic stand-in for a cold interpreter on a busy CI runner. Python start-up is
+    /// not the behaviour under test, so it must not be charged to a request deadline: warm the
+    /// fixture under a generous budget, then apply the deadline under test.
+    const SLOW_START: &str = "import time; time.sleep(1.5)\n";
+
+    /// Switch every already-initialized client to the deadline under test. Spawning and
+    /// `initialize` deliberately run under the fixture's generous budget instead, so a slow
+    /// interpreter start cannot consume the budget that is meant to test one operation.
+    fn apply_operation_deadline(manager: &mut McpManager, budget: Duration) {
+        assert!(
+            !manager.clients.is_empty(),
+            "fixture must be initialized before the deadline under test applies"
+        );
+        for client in manager.clients.values_mut() {
+            client.timeout = budget;
+        }
+    }
+
     const SERVER: &str = r#"import json, os, sys
 initialized = False
 for line in sys.stdin:
@@ -766,16 +784,23 @@ print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':{'protocolVersion'
 
     #[test]
     fn drains_stderr_and_timeout_kills_and_reaps_child() {
-        let body = r#"import os, sys, time
-open(os.path.join(os.path.dirname(__file__), 'pid'), 'w').write(str(os.getpid()))
-sys.stderr.write('x' * (2 * 1024 * 1024))
-sys.stderr.flush()
-time.sleep(60)
-"#;
-        let fixture = Fixture::new(body, json!({"mcp_request_timeout_ms":300}));
+        // Answers initialization and the catalog, then hangs on the call that is timed.
+        let hanging = SERVER.replace(
+            "    elif m == 'tools/call':\n",
+            "    elif m == 'tools/call':\n        time.sleep(60)\n",
+        );
+        let body = format!(
+            "{SLOW_START}import os, sys\nopen(os.path.join(os.path.dirname(__file__), 'pid'), 'w').write(str(os.getpid()))\nsys.stderr.write('x' * (2 * 1024 * 1024))\nsys.stderr.flush()\n{hanging}"
+        );
+        let fixture = Fixture::new(&body, json!({"mcp_request_timeout_ms":10000}));
         let mut manager = fixture.manager();
+        // Startup and initialization must succeed before the deadline under test applies.
+        assert_eq!(manager.catalog().unwrap().len(), 2);
+        apply_operation_deadline(&mut manager, Duration::from_millis(300));
         let started = Instant::now();
-        let error = manager.catalog().unwrap_err();
+        let error = manager
+            .call("mcp__fixture__echo", json!({"text":"slow"}))
+            .unwrap_err();
         assert!(error.contains("timed out"), "{error}");
         assert!(error.len() <= STDERR_LIMIT + 300);
         assert!(error.contains("MCP stderr tail"));
@@ -849,9 +874,12 @@ open(os.path.join(os.path.dirname(__file__), 'descendant'), 'w').write(str(child
     fn blocked_subprocess_stdin_obeys_the_request_deadline() {
         // Respond through catalog, then stop reading before the large call.
         let body = SERVER.replace("    print(json.dumps({'jsonrpc':'2.0','id':r['id'],'result':result}), flush=True)", "    print(json.dumps({'jsonrpc':'2.0','id':r['id'],'result':result}), flush=True)\n    if m == 'tools/list' and r.get('params', {}).get('cursor') == 'page2':\n        import time; time.sleep(60)");
-        let fixture = Fixture::new(&body, json!({"mcp_request_timeout_ms":200}));
+        let body = format!("{SLOW_START}{body}");
+        let fixture = Fixture::new(&body, json!({"mcp_request_timeout_ms":10000}));
         let mut manager = fixture.manager();
-        manager.catalog().unwrap();
+        // Startup and initialization must succeed before the deadline under test applies.
+        assert_eq!(manager.catalog().unwrap().len(), 2);
+        apply_operation_deadline(&mut manager, Duration::from_millis(200));
         let started = Instant::now();
         let error = manager
             .call(
