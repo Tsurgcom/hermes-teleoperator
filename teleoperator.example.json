@@ -2,14 +2,13 @@
   "machines": {
     "workstation": {
       "host": "workstation",
-      "python": "/home/me/.hermes/hermes-agent/venv/bin/python",
-      "hermes_home": "/home/me/.hermes",
+      "executable": "/home/me/.local/bin/hermes-teleoperator-receiver",
+      "teleoperator_home": "/home/me/.config/hermes-teleoperator",
       "timeout": 120
     },
     "server": {
       "host": "me@server.example",
-      "python": "/opt/hermes/venv/bin/python",
-      "hermes_home": "/home/me/.hermes/profiles/work"
+      "executable": "/home/me/.local/bin/hermes-teleoperator-receiver"
     }
   }
 }

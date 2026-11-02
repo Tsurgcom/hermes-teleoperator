@@ -32,10 +32,15 @@ def ssh_argv(target):
         if not 1 <= port <= 65535:
             raise ValueError('Invalid SSH port')
         cmd.extend(['-p', str(port)])
+    if 'python' in target or 'hermes_home' in target:
+        raise ValueError('legacy Python receiver configuration: reinstall the standalone receiver and use executable/teleoperator_home')
     remote = []
-    if target.get('hermes_home'):
-        remote += ['env', 'HERMES_HOME=' + target['hermes_home']]
-    remote += [target.get('python', 'python3'), '-m', 'hermes_teleoperator.companion']
+    if target.get('teleoperator_home'):
+        remote += ['env', 'TELEOPERATOR_HOME=' + target['teleoperator_home']]
+    executable = target.get('executable', '.local/bin/hermes-teleoperator-receiver')
+    if not isinstance(executable, str) or not executable or executable.startswith('-'):
+        raise ValueError('executable must be a receiver path')
+    remote += [executable]
     cmd.extend([host, shlex.join(remote)])
     return cmd
 

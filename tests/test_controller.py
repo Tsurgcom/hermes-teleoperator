@@ -8,7 +8,7 @@ class Peer:
     def call(self, method, params=None):
         self.calls.append((method, params))
         if method == 'ping':
-            return {'protocol': 1, 'hostname': self.name, 'cwd': '/work/' + self.name}
+            return {'protocol': 2, 'hostname': self.name, 'cwd': '/work/' + self.name}
         if method == 'tool':
             return {'content': self.name}
         raise RuntimeError('disconnected')

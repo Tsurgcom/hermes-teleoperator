@@ -4,15 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-teleoperator"
-version = "0.1.0"
+version = "1.1.0"
 description = "Conversation-scoped Hermes tool teleportation over SSH"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 dependencies = []
-
-[project.scripts]
-hermes-teleoperator-companion = "hermes_teleoperator.companion:main"
 
 [project.entry-points."hermes_agent.plugins"]
 hermes-teleoperator = "hermes_teleoperator.plugin:register"

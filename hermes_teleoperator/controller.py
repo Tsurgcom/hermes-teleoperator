@@ -42,13 +42,17 @@ class Controller:
             raise RuntimeError('Disconnected; reconnect explicitly')
         peer = state.peers.get(name)
         if peer is None:
-            peer = self.factory(self.targets[name])
+            peer = None
             try:
+                peer = self.factory(self.targets[name])
                 info = peer.call('ping')
-                if info.get('protocol') != 1:
-                    raise ValueError('Incompatible companion protocol')
+                if info.get('protocol') != 2:
+                    raise ValueError('Incompatible receiver protocol; install the standalone Rust receiver (v1.1+)')
             except Exception:
-                peer.close()
+                # A factory that fails before returning a peer (bad config, unavailable
+                # executable) is a connection error too, not a raw ValueError/TypeError.
+                if peer is not None:
+                    peer.close()
                 raise
             state.peers[name], state.identities[name] = peer, info
         if peer.closed:
@@ -122,7 +126,10 @@ class Controller:
                     result = {'content': result}
             if not isinstance(result, dict):
                 result = {'result': result}
-            return {**result, 'teleoperator': {'machine': name, 'hostname': state.identities[name]['hostname']}}
+            # A ping that reports protocol 2 but omits hostname must not crash the call path.
+            identity = state.identities.get(name) or {}
+            return {**result, 'teleoperator': {'machine': name,
+                                               'hostname': identity.get('hostname') or name}}
 
     def route(self, key, name, args, next_call):
         state = self._session(key)
@@ -145,7 +152,8 @@ class Controller:
                     return file_operation(method, params)
                 return self._peer(state, machine).call(method, params)
             content = endpoint(source_machine, 'file_get', {'path': source})
-            result = endpoint(destination_machine, 'file_put', {'path': destination, **content})
+            result = endpoint(destination_machine, 'file_put', {
+                'path': destination, 'data': content['data'], 'sha256': content['sha256']})
             if result['sha256'] != content['sha256']:
                 raise ValueError('Destination checksum mismatch; source retained')
             if move:

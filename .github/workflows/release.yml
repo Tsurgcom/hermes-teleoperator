@@ -1,0 +1,92 @@
+name: Receiver release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  binary:
+    runs-on: [self-hosted, Linux, X64, teleoperator]
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install build and test dependencies
+        run: |
+          apt-get update
+          apt-get install -y musl-tools gcc-aarch64-linux-gnu qemu-user-static openssh-server python3 python3-pip
+      - name: Build static receiver (no Docker or binfmt registration)
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
+        run: cargo build --locked --release --manifest-path receiver/Cargo.toml --target ${{ matrix.target }}
+      - name: Native Rust and gateway integration tests
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        env:
+          TELEOPERATOR_RECEIVER: ${{ github.workspace }}/receiver/target/x86_64-unknown-linux-musl/release/hermes-teleoperator-receiver
+        run: |
+          cargo test --locked --manifest-path receiver/Cargo.toml
+          mkdir -p /run/sshd
+          bash -n install.sh
+          python3 -m unittest discover -s tests -v
+      - name: Aarch64 receiver tests under QEMU
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: |
+          wrapper="$RUNNER_TEMP/aarch64-receiver"
+          printf '#!/bin/sh\nexec /usr/bin/qemu-aarch64-static "%s" "$@"\n' "$PWD/receiver/target/aarch64-unknown-linux-musl/release/hermes-teleoperator-receiver" > "$wrapper"
+          chmod 700 "$wrapper"
+          export TELEOPERATOR_RECEIVER="$wrapper"
+          python3 - <<'PY'
+          import sys, unittest
+          sys.path.insert(0, 'tests')
+          import test_standalone_receiver as receiver
+          # The chroot fixture deliberately contains no host QEMU executable.
+          suite = unittest.defaultTestLoader.loadTestsFromTestCase(receiver.StandaloneReceiverTests)
+          selected = unittest.TestSuite(t for t in suite if t._testMethodName != 'test_clean_chroot_runs_without_python_or_hermes_installed')
+          assert selected.countTestCases() == 8
+          result = unittest.TextTestRunner(verbosity=2).run(selected)
+          sys.exit(not result.wasSuccessful())
+          PY
+      - name: Stage static binaries
+        run: |
+          mkdir -p artifacts
+          binary=receiver/target/${{ matrix.target }}/release/hermes-teleoperator-receiver
+          file "$binary"
+          if readelf -l "$binary" | grep -q INTERP; then
+            echo 'Release binary unexpectedly requires a dynamic interpreter' >&2
+            exit 1
+          fi
+          cp "$binary" artifacts/hermes-teleoperator-receiver-${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: receiver-${{ matrix.target }}
+          path: artifacts/*
+          if-no-files-found: error
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: binary
+    runs-on: [self-hosted, Linux, X64, teleoperator]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: receiver-*
+          merge-multiple: true
+          path: artifacts
+      - run: cd artifacts && sha256sum hermes-teleoperator-receiver-* > SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: artifacts/*
+          body: |
+            Standalone Rust receiver. No Hermes, Python, Bun or Node installation required on the destination.
+            Linux x86_64/aarch64 static musl binaries. SHA256SUMS verifies release bytes; it is not a publisher signature.
+            Built and tested on the Teleoperator self-hosted runner; aarch64 receiver tests use QEMU, not physical ARM hardware.
+            Draft pending release-download and installer verification.

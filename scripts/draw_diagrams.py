@@ -33,11 +33,11 @@ body += box(36, 110, 382, 240, 'GATEWAY / HERMES', ['Model + conversation stay h
 body += text(460, 130, 'SSH', 20, '#ffd700')
 body += text(448, 274, 'encrypted', 16, '#babdae')
 body += text(448, 298, 'stdio', 16, '#babdae')
-body += box(638, 100, 446, 158, 'WORKSTATION', ['On-demand companion + Hermes', 'Terminal · Files · Skills · MCP', 'Credentials stay on this host'])
-body += box(638, 292, 446, 158, 'SERVER', ['On-demand companion + Hermes', 'Terminal · Files · Skills · MCP', 'Credentials stay on this host'])
+body += box(638, 100, 446, 158, 'WORKSTATION', ['Standalone Rust receiver', 'Terminal · Files · Skills · MCP', 'Credentials stay on this host'])
+body += box(638, 292, 446, 158, 'SERVER', ['Standalone Rust receiver', 'Terminal · Files · Skills · MCP', 'Credentials stay on this host'])
 body += text(36, 414, 'NO EXTRA LISTENER', 18, '#ffd700')
 body += text(36, 445, 'Only SSH. No second conversation agent.', 16, '#babdae')
-(OUT / 'architecture.svg').write_text(svg('Teleoperator architecture', 'One gateway keeps the model and conversation. SSH channels connect it to on-demand companions on a workstation and server, each using local Hermes tools and credentials.', 486, body))
+(OUT / 'architecture.svg').write_text(svg('Teleoperator architecture', 'One gateway keeps the model and conversation. SSH channels connect it to on-demand companions on a workstation and server, each using standalone tool implementations and local credentials; no Hermes installation on the receiver.', 486, body))
 
 body = text(36, 48, '02 / SWITCH MACHINES. KEEP YOUR BEARINGS.', 22, '#ffd700')
 body += '<path d="M348 173H394 M726 173H772" fill="none" stroke="#ffd700" stroke-width="2" marker-end="url(#arrow)"/>'

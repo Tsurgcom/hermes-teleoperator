@@ -1,51 +1,39 @@
 # Hermes Teleoperator - Debug your Mom's PC
 
-![Hermes Teleoperator: gold pixel-art gateway linking a workstation and server over SSH. The model and conversation stay on the gateway.](assets/teleoperator-cover.webp)
+![Hermes Teleoperator: gold pixel-art gateway linking a workstation and server over SSH.](assets/teleoperator-cover.webp)
 
-One conversation. Several computers. Native tools wherever you land.
+One conversation. Several computers. No agent installation on the receiving end.
 
 Teleoperator has two parts:
 
-1. A Hermes plugin on the computer running your conversation.
-2. A small companion started on demand over SSH on each destination.
+1. A Python plugin in the Hermes gateway that owns your conversation.
+2. A standalone Rust receiver, started on demand over SSH on each destination.
 
-The model and conversation stay on the original computer. Terminal, files and skills execute through the destination's own Hermes installation. Remote MCP tools are discovered and called there, using its credentials. This is tool-environment teleportation, not a second agent or a conversation copied between machines.
+The model and conversation stay on the gateway. The receiver provides shell, files, skills and explicitly configured MCP tools on the destination. It needs no Hermes Agent, Python, Bun, Node, model account or API subscription. It opens no network listener. MCP servers you choose to run may have their own runtime requirements.
 
 ## How it fits together
 
-![Architecture: the gateway keeps the model and conversation; SSH connects it to native Hermes tools on each destination.](assets/architecture.svg)
+![Gateway and remote tool environments connected over SSH](assets/architecture.svg)
 
-Each destination uses its own Hermes profile, filesystem and permitted MCP servers. Nothing opens a new public port.
+![Machine switching preserves live connections and fails closed](assets/switching.svg)
 
-## Switch without losing your place
-
-![Switching: move from local to workstation to server; back reuses a live connection. A disconnected remote stays selected until explicit recovery.](assets/switching.svg)
-
-`/teleport back` returns to the previous machine. `/teleport local` returns home. A failed remote call never silently becomes a local command.
-
-## Working today
-
-- `/teleport workstation`, `/teleport server`, `/teleport local`, `/teleport back`.
-- Persistent SSH channels: switching back reuses each computer's shell environment and working directory while its connection remains open.
-- Conversation-scoped selection: another chat doesn't inherit your destination.
-- Native remote `terminal`, `read_file`, `write_file`, `patch`, `search_files`, `skills_list`, `skill_view`, `skill_manage`, and process tools.
-- Remote MCP search, schema inspection and calls; explicitly granted per server.
-- Binary file copies/moves between named computers, including local, with SHA-256 verification and no destination overwrite.
-- Machine labels on remote results and a location reminder on each conversation turn.
-- Strict SSH host-key checks, noninteractive key authentication, no agent forwarding, no listener beyond SSH.
-- No automatic command retries and no fallback to local execution when a remote connection fails.
+`/teleport back` returns to the previous machine. `/teleport local` returns home. A failed remote call never silently becomes a local command. Switching back reuses shell state while the connection remains open; reconnect starts a fresh shell.
 
 ## Requirements
 
-Python 3.11+, OpenSSH client on the controller, an SSH server on destinations, and a current Hermes installation on each computer. The selected remote Python must be the interpreter containing Hermes and its dependencies, not an unrelated system Python. Linux/POSIX is the tested target; Windows is not yet supported.
+Gateway: Hermes with documented plugin/tool-execution middleware, Python 3.11+, OpenSSH client.
 
-This uses Hermes' documented tool-execution middleware on the controller. The companion adapts internal native tool/MCP dispatcher APIs; Hermes upgrades may require adapter changes. Plugin validation reports those imports as compatibility warnings. The test suite is the compatibility check, not a claim of a stable remote-runtime API.
+Linux x86_64 or aarch64 (static musl), OpenSSH server, Bash and the standalone binary. Installation uses Bash, curl, GNU coreutils and OpenSSH's ssh-keygen when enrolling a key. No language toolchain is needed. Windows and macOS binaries are not shipped yet.
 
-## Install
+Measured x86_64 musl release build on Linux 7.0.14, 2 vCPU: 2.3 MiB static binary, about 0.5 ms from spawn to first response, roughly 1.4 MiB RSS including its idle Bash shell after 20 commands. Those are `scripts/measure_receiver.py` results, not a comparison against Python/Bun, and exclude SSH and MCP server processes. The receiver exits at stdin EOF; it is not a resident daemon.
 
-Keep a copy of this repository on each computer. Do not install arbitrary network listeners or copy credentials between computers.
+Release targets are `x86_64-unknown-linux-musl` (2.3 MiB) and `aarch64-unknown-linux-musl` (1.9 MiB), each statically linked with no interpreter. The self-hosted Actions runner builds both without Docker or binfmt registration. The x86_64 release runs the full gateway, real-SSH and clean-chroot tests. The aarch64 release runs 8 receiver tests under `qemu-aarch64-static`, covering shell state, skills, files, transfers and cleanup. Its clean-chroot test is excluded because the host QEMU wrapper is deliberately absent from that jail. Physical ARM hardware, Windows and macOS are not tested; emulated timings are not representative.
 
-Controller, native directory-plugin option (use your active profile's HERMES_HOME):
+Version 1.1 replaces the old Python/Hermes receiver. Old `python`/`hermes_home` machine settings are rejected with a migration error, never silently used. The marketplace submission is on hold until the standalone version is validated and pinned.
+
+## Gateway installation
+
+Install this repository as a native directory plugin, using your active Hermes profile:
 
 ```sh
 mkdir -p "$HERMES_HOME/plugins"
@@ -54,103 +42,84 @@ hermes plugins enable hermes-teleoperator
 hermes plugins doctor /absolute/path/to/hermes-teleoperator --ci
 ```
 
-Restart the Hermes conversation after enabling it. No core files are patched. The directory plugin needs no extra Python packages.
+Restart the conversation after enabling it. Alternatively pip-install the gateway package; choose one discovery method, not both. No core files are patched.
 
-On each destination, install the companion package into the SAME environment that already contains Hermes:
+Configure and verify normal SSH first. Verify the host fingerprint through a trusted channel. Teleoperator uses strict host-key checking, batch authentication, no agent forwarding, no port forwarding and no automatic mutation retries. SSH aliases and ProxyJump work.
+
+## Receiver installation
+
+Run as the intended SSH user, not through sudo. Root is supported only with explicit `--allow-root`.
+
+Release installation, after a release containing binaries has been published:
 
 ```sh
-/path/to/hermes/venv/bin/python -m pip install /absolute/path/to/hermes-teleoperator
+REF=REVIEWED_FULL_COMMIT_SHA
+curl -fsSL "https://raw.githubusercontent.com/Tsurgcom/hermes-teleoperator/$REF/install.sh" |
+  bash -s -- --version v1.1.0 \
+    --public-key 'ssh-ed25519 AAAA... gateway-key'
 ```
 
-Alternatively install the Python package on the controller too; it provides the `hermes_agent.plugins` entry point. Choose either directory discovery or pip plugin installation, not both.
+The gateway generates a dedicated key with `ssh-keygen -t ed25519 -f "$HOME/.ssh/teleoperator-workstation"`. Its private key stays on the gateway. Only the public key goes into `--public-key` or `--public-key-file`. For inspection, download and read the script before running it. Do not pipe private keys or credentials into it.
 
-Configure normal SSH first. Verify the destination's host-key fingerprint through a trusted channel, connect once with ordinary `ssh workstation`, and confirm key authentication works. Teleoperator deliberately refuses unknown/changed host keys; it never uses `StrictHostKeyChecking=no` or auto-enrols keys. SSH config aliases and ProxyJump work. The transport assumes POSIX shell quoting on the destination.
+The installer selects a Linux static musl binary by architecture and checks its SHA256 against the release's SHA256SUMS. These checksums detect corrupt/different bytes; they are distributed by the same GitHub release and are not an independent publisher signature. Supply a trusted `--sha256` to pin independently verified bytes. The bootstrap script itself is trusted through its reviewed revision and GitHub HTTPS. Signed release verification is not implemented.
 
-Create `$HERMES_HOME/teleoperator.json` on the controller, adapting `teleoperator.example.json`:
+Offline/local build installation:
+
+```sh
+cargo build --release --locked --manifest-path receiver/Cargo.toml
+BIN=$(realpath receiver/target/release/hermes-teleoperator-receiver)
+SUM=$(sha256sum "$BIN"); SUM=${SUM%% *}
+bash install.sh --binary "$BIN" --sha256 "$SUM"
+```
+
+Cargo is needed on the build machine only. The installer writes `~/.local/lib/hermes-teleoperator/receiver` and a launcher at `~/.local/bin/hermes-teleoperator-receiver`. It rejects unsafe writable/foreign-owned/symlinked installation and SSH path ancestors. It does not install Hermes, start a daemon or alter unrelated keys. Key enrolment uses a same-directory atomic replacement and a `mkdir` lock, preserving existing keys. If an interrupted installer leaves `~/.ssh/.authorized_keys.lock`, remove it only after confirming no installer is running; subsequent installs time out with guidance. Disconnect before upgrading.
+
+When a public key is supplied it is enrolled using `restrict` and a forced launcher command. This restricts connection entry, not shell commands the receiver can execute with the user's authority. Use a dedicated SSH account for narrower authority. Keep separate administrative SSH access: the restricted key cannot run ordinary setup/repair commands.
+
+## Configure the gateway
+
+Create `$HERMES_HOME/teleoperator.json`:
 
 ```json
 {
   "machines": {
     "workstation": {
-      "host": "workstation",
-      "python": "/home/me/hermes-agent/venv/bin/python",
-      "hermes_home": "/home/me/.hermes",
+      "host": "me@workstation",
+      "executable": "/home/me/.local/bin/hermes-teleoperator-receiver",
+      "teleoperator_home": "/home/me/.config/hermes-teleoperator",
+      "identity_file": "/home/gateway/.ssh/teleoperator-workstation",
       "timeout": 120
     },
     "server": {
       "host": "me@server",
-      "python": "/opt/hermes/venv/bin/python",
-      "hermes_home": "/home/me/.hermes/profiles/work"
+      "executable": "/home/me/.local/bin/hermes-teleoperator-receiver"
     }
   }
 }
 ```
 
-Optional target keys: `port`, `identity_file`, `known_hosts`. Use absolute paths. Settings are read lazily on first use; restart/reload the plugin after editing. Keys stay in SSH's own files/agent, not this JSON. `local` is reserved.
+Optional fields: `port`, `known_hosts`. Use absolute paths. `local` is reserved. Keys stay in SSH files or its agent, not this JSON. Settings are read lazily; reload/restart after changes.
 
-On a destination, remote MCP access is OFF by default. To grant selected MCP servers already configured in that destination's Hermes profile, create its own `$HERMES_HOME/teleoperator.json`:
+## Skills and MCP on the receiver
+
+Receiver configuration lives at `$TELEOPERATOR_HOME`, default `~/.config/hermes-teleoperator`. Skills are ordinary `skills/<name>/SKILL.md` files there. The receiver reads skill text; it does not execute Hermes preprocessing, dependency installers or profile plugins. Existing Hermes installations are optional, not required.
+
+Remote MCP access is off by default. Explicitly configure stdio servers in the receiver's `config.json` and expose only intended names:
 
 ```json
-{"expose_mcp": ["github", "filesystem"]}
+{
+  "expose_mcp": ["example"],
+  "mcp_servers": {
+    "example": {
+      "command": "/absolute/path/to/mcp-server",
+      "args": [],
+      "env": {}
+    }
+  }
+}
 ```
 
-Do not put tokens here. Existing profile credentials stay on that computer. MCP tool trust/approval behavior remains Hermes-owned; an approval requiring an interactive remote UI may be denied because the companion has no human input channel. This version does not forward interactive approval prompts.
-
-Each exposed server must also explicitly set `sampling.enabled: false` in its existing remote Hermes MCP configuration. Teleoperator refuses discovery otherwise, so an MCP server cannot request extra model inference through Hermes sampling. For example, use `hermes config set mcp_servers.github.sampling.enabled false` on the destination. Portable-plugin-only MCP definitions are not exposed by this version; the server must be present in the profile's merged `mcp_servers` configuration.
-
-## Quick destination setup
-
-Generate a dedicated key on the gateway (do not overwrite an existing key):
-
-```sh
-ssh-keygen -t ed25519 -f "$HOME/.ssh/teleoperator-workstation" -C hermes-teleoperator
-```
-
-The private key stays on the gateway. Give the installer only the `.pub` contents. Use an SSH agent if the key has a passphrase; Teleoperator authentication is noninteractive.
-
-Run this on the destination as the intended SSH user. Replace `COMMIT_SHA` with a reviewed full commit SHA from this repository, and the Python path with the destination's existing Hermes interpreter:
-
-```sh
-REF=COMMIT_SHA
-curl -fsSL "https://raw.githubusercontent.com/tsurgcom/hermes-teleoperator/$REF/install.sh" |
-  bash -s -- --ref "$REF" --python /absolute/hermes/venv/bin/python \
-    --public-key 'ssh-ed25519 AAAA... gateway-key' \
-    --hermes-home "$HOME/.hermes"
-```
-
-The script itself uses stdin, so the public key is an argument (or use `--public-key-file /path/to/gateway.pub`), not a second stream piped into bash. Never pass a private key. For inspection first, download `install.sh`, read it, then invoke `bash install.sh` with the same arguments. This bootstrap trusts GitHub HTTPS and the pinned revision; signed release verification is not implemented.
-
-The installer copies the companion under `~/.local/lib/hermes-teleoperator`, checks the existing Hermes interpreter, and prints configuration fields. It does not install Hermes, change its packages, enable remote plugins, touch MCP configuration, or start a daemon. Re-running updates the companion; disconnect active sessions before upgrading.
-
-It adds the dedicated public key to `~/.ssh/authorized_keys` with `restrict` and a forced companion command. Ordinary shell commands using this key always launch the companion instead; use your separate administrative SSH access for setup/repair. This restricts connection entry, not the commands the companion can execute with the SSH user's authority. A key already authorised differently is rejected rather than silently left unrestricted. OpenSSH 7.2+ is required for `restrict`.
-
-Set the controller's machine `python` field to the emitted launcher path (`/home/me/.local/lib/hermes-teleoperator/python`), `identity_file` to the gateway private-key path, and `host` to the same target user. Verify its SSH host fingerprint separately before connecting.
-
-For agent-assisted setup, use existing verified administrative SSH access to run the same installer remotely. Do not use the restricted Teleoperator key for installation. Confirm `id -un`, `$HOME`, the Hermes interpreter and profile before writing. Do not pipe through `sudo`: the installer rejects `SUDO_USER`; deliberate direct root installs require `--allow-root`. A normal-user install cannot be reused as a root install by changing only `user@host`.
-
-### Restart and recovery
-
-There is no systemd service to restart. `/teleport reconnect workstation` closes the old channel and starts a fresh companion through SSH. Shell state is reset; do not replay a failed mutation without checking whether it ran.
-
-If reconnect fails, switch local and diagnose with the separate administrative SSH credential:
-
-```sh
-ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes me@workstation \
-  'id -un; printf "%s\\n" "$HOME"; test -x "$HOME/.local/lib/hermes-teleoperator/python"'
-```
-
-A protocol smoke test also works with the restricted key (the forced command reads the request):
-
-```sh
-printf '%s\n' '{"id":"health","method":"ping"}' |
-  ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes \
-    -i "$HOME/.ssh/teleoperator-workstation" me@workstation \
-    '/home/me/.local/lib/hermes-teleoperator/python -m hermes_teleoperator.companion'
-```
-
-A ping checks transport/identity only. After reconnect, check a harmless native tool such as `pwd` to verify Hermes dependencies too. If the interpreter moved or Hermes changed, disconnect, rerun the installer through administrative SSH with the correct interpreter/profile, then reconnect. Never use broad `pkill python`, restart unrelated Hermes agents, or disable host-key checking.
-
-To uninstall: disconnect, remove only this key's `hermes-teleoperator` line from `authorized_keys`, then delete `~/.local/lib/hermes-teleoperator` and its controller machine entry. Keep unrelated keys, Hermes and profiles intact.
+The receiver uses MCP initialize/tools-list/tools-call directly. It advertises no sampling capability and rejects server callbacks requiring a model or interactive approval. It does not load Hermes config, auth stores, plugins or OAuth pools. Credentials come from the SSH user's environment or explicit server environment. HTTP/SSE MCP transports and forwarded interactive approvals are not implemented. Install the dependencies of each chosen MCP server separately.
 
 ## Use
 
@@ -164,70 +133,57 @@ To uninstall: disconnect, remove only this key's `hermes-teleoperator` line from
 /teleport reconnect workstation
 ```
 
-The `teleoperator` model tool also exposes:
+Terminal, file and skill tool names follow the selected computer. The remote implementation is standalone, not the Hermes native dispatcher. Use `teleoperator(action="describe", name="terminal")` for the actual remote schema; unsupported options return errors rather than silently doing something else.
+
+The model-facing gateway supports:
 
 - `action=status|switch|back|reconnect|disconnect`
-- `action=search, query="github issue"` — discover the selected machine's exposed native/MCP tools.
-- `action=describe, name="mcp__github__get_issue"` — inspect its exact schema.
-- `action=call, name="...", arguments={...}` — execute it remotely.
-- Optional `machine` selects a named remote for search/describe/call without changing the active destination.
+- `action=search, query="capability"`
+- `action=describe, name="<returned-tool-name>"`
+- `action=call, name="<returned-tool-name>", arguments={...}`
+- Optional `machine` addresses a configured remote without changing selection.
+- `action=transfer` with explicit `source_machine`, `source`, `destination_machine`, `destination`, `move=false`.
 
-Native file/terminal/skill calls follow the active computer automatically. Tools a remote machine has but the local model doesn't know about use the stable search/describe/call gateway; tool schemas and past conversation context are not swapped mid-session.
+Transfers support regular files up to 8 MiB, SHA256 verification, no destination overwrite, and copy-before-delete moves. Stop concurrent writers before moving. Use scp/sftp/rsync for large files or directory trees. Transfers do not preserve metadata and are not atomic across two hosts.
 
-Transfer example:
+## Recovery
 
-```json
-{
-  "action": "transfer",
-  "source_machine": "workstation",
-  "source": "/home/me/report.csv",
-  "destination_machine": "local",
-  "destination": "/home/me/downloads/report.csv",
-  "move": false
-}
-```
+There is no service to restart. `/teleport reconnect workstation` starts a fresh receiver through SSH. Do not replay ambiguous mutations without checking whether they ran.
 
-Parent directories must exist. A destination is created atomically and must not already exist. `move=true` removes the source only after a verified copy and a second source-hash check. A failed/ambiguous call is never automatically repeated. Transfers currently support regular files up to 8 MiB, not directories or symlinks; use scp/sftp for larger trees. No metadata/permission preservation. Transfers are not atomic across two computers, and files changing concurrently are not supported: stop writers before a move.
-
-## Location and boundaries
-
-- `status` reports the selected machine, previous machine, configured/connected machines, and connection identity. The identity's cwd is a connection-time snapshot; terminal results report subsequent cwd changes.
-- Every remote response includes `teleoperator.machine` and its hostname.
-- Disconnect does NOT select local. It leaves the remote selected and returns errors until explicit reconnect or `/teleport local`.
-- Reconnect creates a new companion and shell; it does not restore the previous connection's in-memory environment.
-- The initial model prompt and injected local skill index are not rewritten. `skills_list`/`skill_view` read the remote catalog after switching; retrieve relevant remote instructions instead of relying on the initial local index. Remote AGENTS.md is not automatically injected.
-- Local memory, browser sessions, calendar/email connectors, cron, delegation, and model execution are not migrated.
-- Web search/extract and human clarification remain local. Unsupported tools (including `execute_code` and browser/computer tools) are blocked while remote rather than silently run on the controller. Switch local to use them.
-- Native tool guards remain in the execution paths, but this is not a sandbox. SSH grants the destination user's full OS authority, and arbitrary terminal commands can access its data. Use an appropriately scoped SSH account.
-- The companion itself exposes only native file/shell/skill/process tools and explicitly permitted MCP servers. It does not launch a conversation agent. Importing Hermes' native dispatcher also loads plugins enabled in the destination profile: those plugins can run code or register hooks, so use a dedicated remote profile if that is undesirable. Exposed MCP servers must have sampling disabled. Skill loading retains native preprocessing/dependency behavior and is not guaranteed read-only.
-- Restarts begin local; machine selection lives only in the conversation's current process. The controller's `back` history is one previous machine, not a navigation stack.
-
-## Verify
-
-No test dependencies are needed:
+Smoke-test the installed receiver:
 
 ```sh
-python3 -m unittest discover -s tests -v
+printf '%s\n' '{"id":"health","method":"ping"}' |
+  ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes \
+    -i "$HOME/.ssh/teleoperator-workstation" me@workstation \
+    '/home/me/.local/bin/hermes-teleoperator-receiver'
+```
+
+Expect protocol 2 and runtime `standalone-rust`, then verify a harmless `pwd`. If reconnect fails, switch local, use separate administrative SSH to check `id -un`, `$HOME` and the executable, then rerun the installer if needed. Never use broad `pkill`, restart unrelated agents or disable host-key checks.
+
+Uninstall after disconnecting: remove only the enrolled key line, the launcher, `~/.local/lib/hermes-teleoperator`, and the gateway machine entry. Keep unrelated SSH keys and optional skills/config unless you intend to delete them.
+
+## Boundaries
+
+- Machine selection is conversation-scoped and process-local. A new conversation starts local.
+- Disconnect leaves the remote selected; errors never fall back to local.
+- Results carry `teleoperator.machine` and hostname. Identity cwd is a connection-time snapshot.
+- The prompt, memory, initial skill index and AGENTS.md are not migrated. Load remote instructions explicitly.
+- Model execution, browser/desktop, cron, delegation, connectors and local memory stay on the gateway. Unsupported tool names are blocked while remote; switch local to use them. Web search/extract and clarification remain local.
+- This is SSH-user authority, not a sandbox. The receiver does not inherit Hermes' native approval/security guards. Remote terminal execution can access everything the SSH user can. Only explicitly exposed MCPs run, but their code is trusted with the same authority.
+- Skill text/file semantics, regex search and plain-text patching are not full Hermes feature parity. Document extraction, fuzzy patches, PTY/interactive terminal sessions and HTTP MCP are outside this receiver's initial scope. Use direct SSH/appropriate tooling for those tasks.
+- EOF cleans receiver-owned subprocesses. State is preserved only while the channel lives; no daemon, agent or model process remains intentionally resident.
+
+## Build and verify
+
+```sh
+cargo test --locked --manifest-path receiver/Cargo.toml
+cargo build --release --locked --manifest-path receiver/Cargo.toml
+TELEOPERATOR_RECEIVER="$PWD/receiver/target/release/hermes-teleoperator-receiver" \
+  python3 -m unittest discover -s tests -v
 hermes plugins doctor . --ci
-hermes plugins validate . --json
 ```
 
-For the full integration suite, point at a real Hermes environment/source checkout:
+The standalone SSH fixture uses an isolated OpenSSH server, temporary keys and receiver homes; it does not modify production SSH configuration. It runs the receiver where Hermes cannot be imported. Two loopback users/homes exercise switching and isolation; a second physical machine is not a claim made by this test.
 
-```sh
-TELEOPERATOR_HERMES_PYTHON=/path/to/hermes/venv/bin/python \
-TELEOPERATOR_HERMES_SOURCE=/path/to/hermes/source \
-python3 -m unittest discover -s tests -v
-```
-
-The SSH integration test needs root and OpenSSH to start an isolated loopback-only sshd on a random port. It creates temporary host/client keys and two isolated remote profiles, invokes the real Hermes dispatcher and a deliberately tiny test MCP server over SSH, verifies binary transfer and wrong-key rejection, then removes the fixture and stops sshd. It does not modify production SSH keys/config, real Hermes profiles, or existing MCP configuration. Two profiles on one loopback host test isolation and transport; a second physical computer has not yet been tested.
-
-## Layout
-
-- `hermes_teleoperator/plugin.py`: native plugin, slash command and middleware.
-- `controller.py`: per-conversation destinations and transfer orchestration.
-- `transport.py`: strict SSH persistent framed RPC.
-- `companion.py`: remote stdio service.
-- `runtime.py`: native Hermes integration boundary.
-- `files.py`: verified small-file transfer.
-- `tests/`: unit, subprocess, native runtime and real SSH/MCP integration tests.
+Layout: `hermes_teleoperator/` is the gateway-only Python plugin; `receiver/` is the Rust companion; `install.sh` installs release binaries; `tests/` covers gateway, installer, process and SSH integration.
