@@ -1,0 +1,10 @@
+name: hermes-teleoperator
+version: 0.1.0
+description: Switch a conversation's native tools between machines over SSH.
+provides_tools:
+  - teleoperator
+provides_hooks:
+  - pre_llm_call
+  - on_session_end
+provides_middleware:
+  - tool_execution
