@@ -1,4 +1,4 @@
-# Hermes Teleoperator
+# Hermes Teleoperator - Debug your Mom's PC
 
 ![Hermes Teleoperator: gold pixel-art gateway linking a workstation and server over SSH. The model and conversation stay on the gateway.](assets/teleoperator-cover.webp)
 
