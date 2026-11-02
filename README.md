@@ -1,5 +1,7 @@
 # Hermes Teleoperator
 
+![Hermes Teleoperator: gold pixel-art gateway linking a workstation and server over SSH. The model and conversation stay on the gateway.](assets/teleoperator-cover.webp)
+
 One conversation. Several computers. Native tools wherever you land.
 
 Teleoperator has two parts:
@@ -8,6 +10,18 @@ Teleoperator has two parts:
 2. A small companion started on demand over SSH on each destination.
 
 The model and conversation stay on the original computer. Terminal, files and skills execute through the destination's own Hermes installation. Remote MCP tools are discovered and called there, using its credentials. This is tool-environment teleportation, not a second agent or a conversation copied between machines.
+
+## How it fits together
+
+![Architecture: the gateway keeps the model and conversation; SSH connects it to native Hermes tools on each destination.](assets/architecture.svg)
+
+Each destination uses its own Hermes profile, filesystem and permitted MCP servers. Nothing opens a new public port.
+
+## Switch without losing your place
+
+![Switching: move from local to workstation to server; back reuses a live connection. A disconnected remote stays selected until explicit recovery.](assets/switching.svg)
+
+`/teleport back` returns to the previous machine. `/teleport local` returns home. A failed remote call never silently becomes a local command.
 
 ## Working today
 
