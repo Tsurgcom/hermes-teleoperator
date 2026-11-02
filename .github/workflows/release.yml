@@ -207,7 +207,7 @@ jobs:
             Standalone Rust receiver. No Hermes, Python, Bun or Node installation required on the destination.
 
             `*-linux-musl`: fully static. No libc, no dynamic loader on the destination.
-            `*-linux-gnu`: dynamically linked, pinned to glibc 2.17, so they run on any distro with glibc 2.17 or newer (RHEL/CentOS 7 and up).
+            `*-linux-gnu`: dynamically linked, with a glibc 2.17 symbol floor (2.19 for powerpc64le). Matching CPU ABI and dynamic loader are also required.
             `*-apple-darwin`: macOS binaries; unsigned and not notarised, so Gatekeeper needs an override.
 
             SHA256SUMS verifies release bytes; it is not a publisher signature.

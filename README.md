@@ -35,7 +35,7 @@ Two linkage models ship for Linux from the same source, because "which libc" is 
 - **glibc, dynamic** — linked against a **glibc 2.17 symbol floor**, so it also runs on RHEL/CentOS 7-era systems and anything newer. `x86_64`, `aarch64`, `armv7` (gnueabihf), `i686`, `s390x`. `powerpc64le` uses a **2.19 floor** because zig has no older glibc for that ABI. Pick these when a distro policy wants dynamic binaries or when the host must share a glibc-versioned toolchain.
 - **macOS** — `aarch64-apple-darwin` and `x86_64-apple-darwin`. Unsigned and not notarised, so Gatekeeper needs an override.
 
-The static musl binary is the default recommendation and what `install.sh` downloads. The glibc floor is enforced in CI: the release job fails if any `GLIBC_*` symbol in a dynamic binary is newer than that target's floor (2.17, or 2.19 for ppc64le).
+The static musl binary is the default recommendation. `install.sh` currently auto-downloads Linux x86_64/aarch64 only; other Linux builds require an explicit `--binary` and trusted `--sha256`. The installer is Linux-only and uses GNU utilities: macOS assets require manual installation, not `install.sh`. The glibc floor is enforced in CI: the release job fails if any `GLIBC_*` symbol in a dynamic binary is newer than that target's floor (2.17, or 2.19 for ppc64le).
 
 Test coverage per target is not uniform, and the release notes say so. The full gateway protocol, file transfer, skills, real-SSH and clean-chroot suites run on `x86_64-unknown-linux-musl`. `aarch64-unknown-linux-musl` runs 8 receiver tests under `qemu-aarch64-static` (its clean-chroot test is excluded because the host QEMU wrapper is deliberately absent from that jail). Every other Linux target is cross-compiled and only checked for linkage (`PT_INTERP` present/absent and the glibc floor); macOS binaries are built on a macOS runner but not executed in CI. Emulated timings are not representative.
 
@@ -65,7 +65,7 @@ Release installation, after a release containing binaries has been published:
 ```sh
 REF=REVIEWED_FULL_COMMIT_SHA
 curl -fsSL "https://raw.githubusercontent.com/Tsurgcom/hermes-teleoperator/$REF/install.sh" |
-  bash -s -- --version v1.1.0 \
+  bash -s -- --version v1.1.1 \
     --public-key 'ssh-ed25519 AAAA... gateway-key'
 ```
 
