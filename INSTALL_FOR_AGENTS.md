@@ -25,21 +25,21 @@ A non-root destination account is the default. Direct root installation needs ex
 
 Read the repository README and the installed Hermes CLI's help. Load the `hermes-agent` skill if available. Check `hermes --version`, `hermes plugins install --help` and existing plugins before installing: do not create a second discovery path for an already-installed copy.
 
-For the published **v1.1.2** release, the immutable source commit is:
+For the corrected **v1.1.2 gateway/installer source** (safe install scan), the immutable commit is:
 
 ```text
-222e1f0e02d7295308ca978664f040c20930718f
+c3ae955c9888a8b4397fff3eda8672aaafe83c2f
 ```
 
 Run on the **gateway**, with the intended profile selected (use `hermes -p <profile> ...` when appropriate):
 
 ```sh
 hermes plugins install Tsurgcom/hermes-teleoperator \
-  --ref 222e1f0e02d7295308ca978664f040c20930718f --enable
+  --ref c3ae955c9888a8b4397fff3eda8672aaafe83c2f --enable
 hermes plugins list
 ```
 
-This guide's pin is deliberate: the corresponding receiver assets exist in release `v1.1.2`. Do not mix `main` source, an arbitrary receiver release and an older installed gateway. For a future release, verify the published tag's full commit SHA, version metadata and assets together before choosing a new pin. Do not move tags or use `latest` to conceal a mismatch.
+This guide's source pin includes the scan fixes; receiver source/version is unchanged and the corresponding binary assets exist in release `v1.1.2`. Do not use the original v1.1.2 source tag for the gateway or installer: it predates the scan fixes. Do not mix `main` source, an arbitrary receiver release and an older installed gateway. For a future release, verify the published tag's full commit SHA, version metadata and assets together before choosing a new pin. Do not move tags or use `latest` to conceal a mismatch.
 
 Use the plugin directory reported by installation/listing as `PLUGIN_DIR`. Validate it with:
 
