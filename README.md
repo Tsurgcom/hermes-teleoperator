@@ -11,6 +11,15 @@ Teleoperator has two parts:
 
 The model and conversation stay on the gateway. The receiver provides shell, files, skills and explicitly configured MCP tools on the destination. It needs no Hermes Agent, Python, Bun, Node, model account or API subscription. It opens no network listener. MCP servers you choose to run may have their own runtime requirements.
 
+Want your agent to set it up? Copy and paste this prompt into Hermes:
+
+```text
+I want you to install the Hermes Teleoperator plugin, to help with accessing other machines. Prompt me through the setup, with the useful `hermes-teleoperator` accompanying skill.
+
+Install the plugin first. (read https://github.com/Tsurgcom/hermes-teleoperator)
+Prompt me to restart the gateway when needed, and guide me through the rest of the setup. Fetch and read the raw installation guide before starting: https://raw.githubusercontent.com/Tsurgcom/hermes-teleoperator/main/INSTALL_FOR_AGENTS.md
+```
+
 ## How it fits together
 
 ![Gateway and remote tool environments connected over SSH](assets/architecture.svg)
