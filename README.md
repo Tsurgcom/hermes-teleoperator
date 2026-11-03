@@ -32,7 +32,7 @@ Prompt me to restart the gateway when needed, and guide me through the rest of t
 
 Gateway: Hermes with documented plugin/tool-execution middleware, Python 3.11+, OpenSSH client.
 
-Linux x86_64, aarch64, armv7, i686, riscv64, ppc64le or s390x, macOS 11+ on x86_64 or arm64, an OpenSSH server, Bash and the standalone binary. Installation uses Bash, curl, GNU coreutils and OpenSSH's ssh-keygen when enrolling a key. No language toolchain is needed. Windows is not supported: the receiver is Unix-only by design (openat/linkat/renameat file handling, Unix sockets, POSIX process groups, Bash).
+Linux x86_64, aarch64, armv7, i686, riscv64, ppc64le or s390x, macOS 11+ on x86_64 or arm64, an OpenSSH server, Bash and the standalone binary. Installation uses Bash, curl, GNU coreutils and OpenSSH's ssh-keygen when generating a public-key authorization entry. No language toolchain is needed. Windows is not supported: the receiver is Unix-only by design (openat/linkat/renameat file handling, Unix sockets, POSIX process groups, Bash).
 
 Measured x86_64 musl release build on Linux 7.0.14, 2 vCPU: 2.3 MiB static binary, about 0.5 ms from spawn to first response, roughly 1.4 MiB RSS including its idle Bash shell after 20 commands. Those are `scripts/measure_receiver.py` results, not a comparison against Python/Bun, and exclude SSH and MCP server processes. The receiver exits at stdin EOF; it is not a resident daemon.
 
@@ -85,7 +85,7 @@ Selection prefers static musl on supported Linux targets, falling back to glibc 
 
 Gateway and receiver versions must match exactly when connecting. Upgrade/reload the gateway, deploy from that same environment, then reconnect. Old receivers with no version field are rejected; changing a JSON setting cannot bypass parity. Run `--probe` before mutating a target; a missing exact release asset is an error, never a fallback to an older release.
 
-The gateway generates a dedicated key with `ssh-keygen -t ed25519 -f "$HOME/.ssh/teleoperator-workstation"`. Its private key stays on the gateway; setup accepts only its `.pub` file. Keep separate administrative access: the enrolled Teleoperator key is forced to the receiver and cannot run deployment/repair shell commands.
+The gateway generates a dedicated key with `ssh-keygen -t ed25519 -f "$HOME/.ssh/teleoperator-workstation"`. Its private key stays on the gateway; setup accepts only its `.pub` file. Deployment returns `ssh_authorization_entry` containing a restricted, forced-command entry. Review that entry and have the destination administrator add it to that account's SSH authorization file; neither installer reads or modifies SSH authorization files. Do not replace an existing administrative key. Keep separate administrative access: once authorized, the Teleoperator key is forced to the receiver and cannot run deployment/repair shell commands.
 
 ### Standalone target-side installer (alternative, Linux only)
 
@@ -113,9 +113,9 @@ SUM=$(sha256sum "$BIN"); SUM=${SUM%% *}
 bash install.sh --binary "$BIN" --sha256 "$SUM"
 ```
 
-Cargo is needed on the build machine only. The installer writes `~/.local/lib/hermes-teleoperator/receiver` and a launcher at `~/.local/bin/hermes-teleoperator-receiver`. It rejects unsafe writable/foreign-owned/symlinked installation and SSH path ancestors. It does not install Hermes, start a daemon or alter unrelated keys. Key enrolment uses a same-directory atomic replacement and a `mkdir` lock, preserving existing keys. If an interrupted installer leaves `~/.ssh/.authorized_keys.lock`, remove it only after confirming no installer is running; subsequent installs time out with guidance. Disconnect before upgrading.
+Cargo is needed on the build machine only. The installer writes `~/.local/lib/hermes-teleoperator/receiver` and a launcher at `~/.local/bin/hermes-teleoperator-receiver`. It rejects unsafe writable/foreign-owned/symlinked installation paths. It does not install Hermes, start a daemon, or read or modify SSH authorization files. Disconnect before upgrading.
 
-When a public key is supplied it is enrolled using `restrict` and a forced launcher command. This restricts connection entry, not shell commands the receiver can execute with the user's authority. Use a dedicated SSH account for narrower authority. Keep separate administrative SSH access: the restricted key cannot run ordinary setup/repair commands.
+When a public key is supplied, the installer prints an entry using `restrict` and a forced launcher command for manual administrator approval and installation. It does not authorize the key. The restriction controls connection entry, not shell commands the receiver can execute with the user's authority. Use a dedicated SSH account for narrower authority. Keep separate administrative SSH access: the restricted key cannot run ordinary setup/repair commands.
 
 ## Configure the gateway
 

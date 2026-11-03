@@ -317,7 +317,7 @@ def deploy(target, *, allow_root=False, version=None, teleoperator_home=None,
     if public_key is not None:
         public_key = validate_public_key(public_key)
         if not re.fullmatch(r'[A-Za-z0-9/._+-]+', launcher):
-            raise DeployError('Cannot safely enroll forced-command key: launcher path needs shell quoting')
+            raise DeployError('Cannot safely generate forced-command key entry: launcher path needs shell quoting')
     result = {'asset': asset, 'version': VERSION, 'identity': probe,
               'executable': launcher, 'teleoperator_home': config}
     if probe_only:
@@ -354,44 +354,7 @@ chmod 700 "$stage/receiver"
             installed_binary = base + '/receiver-' + VERSION + '-' + digest
             launcher_text = ('#!/bin/sh\nexport TELEOPERATOR_HOME=' + shlex.quote(config) +
                              '\nexec ' + shlex.quote(installed_binary) + ' "$@"\n')
-            enrollment = ''
-            if public_key:
-                entry = 'restrict,command="' + launcher + '" ' + public_key + ' hermes-teleoperator'
-                enrollment = _bindings(entry=entry, key_data=public_key.split()[1]) + r'''
-secure_path "$home/.ssh"
-secure_path "$home/.ssh/authorized_keys"
-mkdir -p "$home/.ssh"
-chmod 700 "$home/.ssh"
-# Fail immediately on a concurrent installer; never retry ambiguous mutations.
-auth_lock=$home/.ssh/.authorized_keys.lock
-mkdir "$auth_lock" || fail 'Authorized keys busy; inspect before retrying'
-trap 'rmdir "$auth_lock"' EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
-auth=$home/.ssh/authorized_keys
-secure_path "$auth"
-[ ! -e "$auth" ] || [ -f "$auth" ] || fail 'authorized_keys not regular'
-if [ -f "$auth" ]; then
-    while IFS= read -r line || [ -n "$line" ]; do
-        case $line in *"$key_data"*) [ "$line" = "$entry" ] || fail 'Key already authorized differently; use a dedicated key' ;; esac
-    done < "$auth"
-fi
-auth_tmp=$(mktemp "$home/.ssh/.authorized_keys.XXXXXXXX")
-trap 'rm -f "$auth_tmp"; rmdir "$auth_lock"' EXIT
-if [ -f "$auth" ]; then cat "$auth" > "$auth_tmp"; fi
-if ! grep -F -x -q "$entry" "$auth_tmp"; then
-    [ ! -s "$auth_tmp" ] || printf '\n' >> "$auth_tmp"
-    printf '%s\n' "$entry" >> "$auth_tmp"
-fi
-if [ -f "$auth" ]; then
-    set -- $(metadata "$auth")
-    chmod "$2" "$auth_tmp"
-else
-    chmod 600 "$auth_tmp"
-fi
-'''
-            _run(target, context + _bindings(installed=installed_binary, content=launcher_text) + SAFE_SH + enrollment + r'''
+            _run(target, context + _bindings(installed=installed_binary, content=launcher_text) + SAFE_SH + r'''
 # DEPLOY_COMMIT: only reached after successful transfer, hash and handshake.
 secure_path "$installed"
 [ ! -e "$installed" ] || [ -f "$installed" ] || fail 'Installed binary is not regular'
@@ -399,17 +362,19 @@ mkdir -p "$(dirname "$launcher")" "$config"
 # Stage the launcher on its own filesystem; mv remains atomic even if .local/bin
 # and .local/lib are separate mounts. Never truncate the live launcher.
 launcher_tmp=$(mktemp "$(dirname "$launcher")/.receiver-launcher.XXXXXXXX")
-trap 'rm -f "$launcher_tmp"; [ -z "${auth_tmp:-}" ] || rm -f "$auth_tmp"; [ -z "${auth_lock:-}" ] || rmdir "$auth_lock"' EXIT
+trap 'rm -f "$launcher_tmp"' EXIT
 printf '%s' "$content" > "$launcher_tmp"
 chmod 700 "$launcher_tmp"
 # Content-addressed binary first, then one atomic live launcher switch.
 mv -f "$stage/receiver" "$installed"
 mv -f "$launcher_tmp" "$launcher"
-if [ -n "${auth_tmp:-}" ]; then
-    mv -f "$auth_tmp" "$auth"
-fi
 ''')
             result['handshake'] = _ping(target, launcher, probe, config)
+            if public_key:
+                # The administrator must explicitly install this dedicated restricted key.
+                # Deployment never inspects or changes remote SSH authorization state.
+                result['ssh_authorization_entry'] = ('restrict,command="' + launcher + '" '
+                                                     + public_key + ' hermes-teleoperator')
         finally:
             if stage:
                 try:
@@ -445,7 +410,7 @@ def main(argv=None):
     parser.add_argument('--version', help='Must equal v' + VERSION)
     parser.add_argument('--allow-root', action='store_true')
     parser.add_argument('--teleoperator-home', help='Absolute receiver state directory; existing state is preserved')
-    parser.add_argument('--public-key-file', help='Optional dedicated gateway ED25519 PUBLIC key to enroll; never a private key')
+    parser.add_argument('--public-key-file', help='Optional dedicated gateway ED25519 PUBLIC key; prints ssh_authorization_entry for manual administrator installation, never enrolls it')
     parser.add_argument('--probe', action='store_true', help='Read-only detection and package selection; no downloads or writes')
     args = parser.parse_args(argv)
     try:

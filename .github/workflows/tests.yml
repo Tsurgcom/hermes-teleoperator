@@ -5,6 +5,36 @@ on:
 permissions:
   contents: read
 jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Check out the official scanner at a reviewed revision
+        uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          ref: f0d94882e89ab8d4098b5bb2f166adfb9ee0a0ab
+          path: .venv/hermes-validation
+          persist-credentials: false
+      - name: Scan the complete source checkout before building
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.venv/hermes-validation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from tools.plugin_guard import scan_plugin
+          result = scan_plugin(Path.cwd())
+          print(result.summary)
+          for finding in result.findings:
+              print(finding)
+          if result.verdict == 'dangerous':
+              raise SystemExit('Official Hermes security scan failed')
+          PY
   test:
     runs-on: ubuntu-latest
     strategy:

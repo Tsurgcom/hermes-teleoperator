@@ -246,6 +246,20 @@ class EnrollmentAndCLITests(unittest.TestCase):
                 with self.subTest(bad=bad[:30]), self.assertRaises(deploy.DeployError):
                     deploy.validate_public_key(bad)
 
+    def test_forced_command_path_injection_is_rejected_before_any_mutation(self):
+        probe = {**linux(), 'uid': '1000', 'user': 'alice',
+                 'home': '/home/alice;touch injected', 'hostname': 'host', 'sudo': ''}
+        data = b''.join(k.encode() + b'\0' + v.encode() + b'\0' for k, v in probe.items())
+        import base64
+        public = 'ssh-ed25519 ' + base64.b64encode(
+            b'\0\0\0\x0bssh-ed25519\0\0\0\x20' + b'k' * 32).decode()
+        with patch.object(deploy, '_run', return_value=data) as run, \
+             patch.object(deploy, 'download_release') as download:
+            with self.assertRaisesRegex(deploy.DeployError, 'shell quoting'):
+                deploy.deploy({'host': 'alice@host'}, public_key=public)
+        self.assertEqual(run.call_count, 1)
+        download.assert_not_called()
+
     def test_cli_probe_has_no_download_or_mutation(self):
         probe = {**linux(), 'uid': '1000', 'user': 'alice', 'home': '/home/alice',
                  'hostname': 'host', 'sudo': ''}
@@ -258,6 +272,69 @@ class EnrollmentAndCLITests(unittest.TestCase):
 
 
 class OfflineExecutionTests(unittest.TestCase):
+    def test_deploy_returns_manual_entry_without_touching_ssh_tree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / 'home'
+            home.mkdir(mode=0o700)
+            key = Path(tmp) / 'dedicated'
+            subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(key)], check=True)
+            public = key.with_suffix('.pub').read_text()
+            env = {**os.environ, 'HOME': str(home)}
+            env.pop('SUDO_USER', None)
+            def local_run(target, script, **kwargs):
+                self.assertNotIn('.ssh', script)
+                self.assertNotIn('authorized_keys', script)
+                result = subprocess.run(['sh', '-c', script], input=kwargs.get('data'),
+                                        capture_output=True, env=env, timeout=10)
+                if result.returncode:
+                    raise deploy.DeployError(result.stderr.decode())
+                return result.stdout
+            def download(asset, directory):
+                binary = directory / 'receiver'
+                binary.write_bytes(b'verified test payload')
+                return binary, hashlib.sha256(binary.read_bytes()).hexdigest()
+            def snapshot():
+                tree = home / '.ssh'
+                if not tree.exists():
+                    return None
+                result = {}
+                for path in [tree, *sorted(tree.rglob('*'))]:
+                    st = path.lstat()
+                    content = (os.readlink(path) if path.is_symlink() else
+                               path.read_bytes() if path.is_file() else None)
+                    result[str(path.relative_to(home))] = (
+                        st.st_ino, st.st_mode, st.st_uid, st.st_gid, st.st_nlink,
+                        st.st_size, st.st_mtime_ns, st.st_ctime_ns, content)
+                return result
+            ssh = home / '.ssh'
+            ssh.mkdir(mode=0o750)
+            (ssh / 'authorized_keys').write_bytes(b'# existing unterminated key')
+            (ssh / 'authorized_keys').chmod(0o400)
+            (ssh / 'config').write_bytes(b'Host untouched')
+            (ssh / 'nested').mkdir()
+            (ssh / 'nested/key').write_bytes(b'private sentinel')
+            (ssh / 'link').symlink_to('nested/key')
+            config = home / '.config/hermes-teleoperator/config.json'
+            config.parent.mkdir(parents=True)
+            config.write_bytes(b'{"preserved":true}')
+            with patch.object(deploy, '_run', side_effect=local_run), \
+                 patch.object(deploy, 'download_release', side_effect=download), \
+                 patch.object(deploy, '_ping', return_value={}):
+                for state in ('populated', 'fifo', 'absent'):
+                    with self.subTest(state=state):
+                        if state == 'fifo':
+                            (ssh / 'authorized_keys').unlink()
+                            os.mkfifo(ssh / 'authorized_keys')
+                        elif state == 'absent':
+                            shutil.rmtree(ssh)
+                        before = snapshot()
+                        result = deploy.deploy({'host': 'unused'}, allow_root=True, public_key=public)
+                        self.assertEqual(snapshot(), before)
+                        self.assertEqual(config.read_bytes(), b'{"preserved":true}')
+                        self.assertEqual(result['ssh_authorization_entry'],
+                                         'restrict,command="' + result['executable'] + '" '
+                                         + ' '.join(public.split()[:2]) + ' hermes-teleoperator')
+
     def test_unsafe_paths_and_corrupt_transfer_preserve_live_launcher(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / 'home'
@@ -428,9 +505,11 @@ X11Forwarding no
                     result = deploy.deploy(target, allow_root=True,
                                            public_key=(d / 'dedicated.pub').read_text())
                     self.assertEqual(Path(result['executable']).read_bytes(), old)
-                    self.assertEqual(auth.read_text().count('hermes-teleoperator\n'), 1)
-                    self.assertTrue(auth.read_text().startswith(original_admin))
+                    self.assertEqual(auth.read_text(), original_admin)
                     self.assertEqual(auth.stat().st_mode & 0o777, 0o640)
+                    self.assertEqual(sorted(p.name for p in auth.parent.iterdir()), ['authorized_keys'])
+                    # Explicit test-administrator enrollment, never deployment behavior.
+                    auth.write_text(original_admin + result['ssh_authorization_entry'] + '\n')
                     forced = {**target, 'identity_file': str(d / 'dedicated'), 'executable': '/bin/false'}
                     with deploy.RpcProcess(deploy.ssh_argv(forced), timeout=10) as rpc:
                         ping = rpc.call('ping')

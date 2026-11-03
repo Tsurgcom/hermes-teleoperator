@@ -219,10 +219,12 @@ for line in sys.stdin:
                 self.assertEqual(installed.returncode, 0, installed.stderr)
                 launcher = install_home / '.local/bin/hermes-teleoperator-receiver'
                 self.assertTrue(launcher.is_file(), installed.stdout)
-                installed_keys = (install_home / '.ssh/authorized_keys').read_text()
-                self.assertIn('restrict,command=', installed_keys)
-                self.assertIn(str(launcher), installed_keys)
-                authorized.write_text(installed_keys)
+                self.assertFalse((install_home / '.ssh').exists())
+                entry = next(line for line in installed.stdout.splitlines()
+                             if line.startswith('restrict,command='))
+                self.assertIn(str(launcher), entry)
+                # Explicit enrollment by this isolated test's administrator.
+                authorized.write_text(entry + '\n')
                 # Intentionally request an unusable executable: OpenSSH MUST run
                 # the enrolled forced launcher instead of the requested command.
                 forced = {**targets['alpha'], 'executable': '/bin/false'}

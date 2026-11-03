@@ -4,23 +4,37 @@ import hashlib
 import os
 from pathlib import Path
 import re
-import shutil
+import inspect
 import subprocess
 import tempfile
-from typing import Callable, Optional
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class StandaloneInstallTests(unittest.TestCase):
+    @staticmethod
+    def ssh_snapshot(home):
+        tree = home / '.ssh'
+        if not tree.exists():
+            return None
+        result = {}
+        for path in [tree, *sorted(tree.rglob('*'))]:
+            st = path.lstat()
+            content = (os.readlink(path) if path.is_symlink() else
+                       path.read_bytes() if path.is_file() else None)
+            result[str(path.relative_to(home))] = (
+                st.st_ino, st.st_mode, st.st_uid, st.st_gid, st.st_nlink,
+                st.st_size, st.st_mtime_ns, st.st_ctime_ns, content)
+        return result
+
     def invoke(self, home, binary, *extra, env_extra=None):
         env = {k: v for k, v in {**os.environ, 'HOME': str(home)}.items()
                if k not in ('SUDO_USER', 'HERMES_HOME', 'PYTHONPATH', 'TELEOPERATOR_HOME')}
         env.update(env_extra or {})
         digest = hashlib.sha256(binary.read_bytes()).hexdigest()
         return subprocess.run(['bash', str(ROOT / 'install.sh'), '--binary', str(binary),
-            '--sha256', digest, '--allow-root', *extra], env=env, capture_output=True, text=True)
+            '--sha256', digest, '--allow-root', *extra], env=env, capture_output=True, text=True, timeout=30)
 
     def test_local_binary_install_is_independent_of_python_and_hermes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -37,6 +51,47 @@ class StandaloneInstallTests(unittest.TestCase):
             again = self.invoke(home, binary)
             self.assertEqual(again.returncode, 0, again.stderr)
 
+    def test_installer_has_no_ssh_state_access(self):
+        self.assertNotIn('.ssh', (ROOT / 'install.sh').read_text())
+
+    def test_public_key_validation_rejects_injection_without_changing_live_install(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            binary = root / 'receiver'
+            binary.write_text('#!/bin/sh\nexit 0\n')
+            key = root / 'key'
+            subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(key)], check=True)
+            public = Path(str(key) + '.pub').read_text().strip()
+            self.assertEqual(self.invoke(root, binary).returncode, 0)
+            launcher = root / '.local/bin/hermes-teleoperator-receiver'
+            before = launcher.read_bytes()
+            for bad in (key.read_text(), public + '\n' + public, public + '\r',
+                        'ssh-ed25519 AAAA', 'restrict ' + public, 'ssh-rsa AAAA'):
+                with self.subTest(bad=bad[:30]):
+                    result = self.invoke(root, binary, '--public-key', bad)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse((root / '.ssh').exists())
+                    self.assertEqual(launcher.read_bytes(), before)
+            result = self.invoke(root, binary, '--public-key', public.split()[0] + ' '
+                                 + public.split()[1] + ' "; touch /not-executed; #')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            entry = next(line for line in result.stdout.splitlines() if line.startswith('restrict,command='))
+            self.assertNotIn('touch', entry)
+            self.assertNotIn('/not-executed', entry)
+
+    def test_empty_public_key_file_is_rejected_without_ssh_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            binary = root / 'receiver'
+            binary.write_text('#!/bin/sh\nexit 0\n')
+            key = root / 'empty.pub'
+            key.touch()
+            result = self.invoke(root, binary, '--public-key-file', str(key))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('public key', result.stderr.lower())
+            self.assertFalse((root / '.ssh').exists())
+            self.assertFalse((root / '.local/bin/hermes-teleoperator-receiver').exists())
+
     def test_checksum_mismatch_does_not_install(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -47,7 +102,7 @@ class StandaloneInstallTests(unittest.TestCase):
             self.assertIn('checksum', result.stderr.lower())
             self.assertFalse((root / '.local/bin/hermes-teleoperator-receiver').exists())
 
-    def test_restricted_public_key_enrolment_is_idempotent(self):
+    def test_restricted_public_key_entry_is_printed_without_creating_ssh_state(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             binary = root / 'receiver'
@@ -57,12 +112,14 @@ class StandaloneInstallTests(unittest.TestCase):
             for _ in range(2):
                 result = self.invoke(root, binary, '--public-key-file', str(key) + '.pub')
                 self.assertEqual(result.returncode, 0, result.stderr)
-            auth = root / '.ssh/authorized_keys'
-            self.assertEqual(len(auth.read_text().splitlines()), 1)
-            self.assertTrue(auth.read_text().startswith('restrict,command="'))
-            self.assertEqual(auth.stat().st_mode & 0o777, 0o600)
+                self.assertFalse((root / '.ssh').exists())
+                entries = [line for line in result.stdout.splitlines() if line.startswith('restrict,command=')]
+                self.assertEqual(entries, [f'restrict,command="\'{root}/.local/bin/hermes-teleoperator-receiver\'" '
+                                           + ' '.join(Path(str(key) + '.pub').read_text().split()[:2])
+                                           + ' hermes-teleoperator'])
+                self.assertIn('manual', result.stdout.lower())
 
-    def test_key_enrolment_atomically_preserves_existing_content_and_mode(self):
+    def test_manual_entry_preserves_existing_ssh_tree_and_unrelated_state(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             binary = root / 'receiver'
@@ -74,17 +131,21 @@ class StandaloneInstallTests(unittest.TestCase):
             original = b'# existing unterminated entry'
             auth.write_bytes(original)
             auth.chmod(0o400)
-            old = root / 'old-authorized_keys'
-            os.link(auth, old)
+            (auth.parent / 'config').write_text('Host preserved\n')
+            (auth.parent / 'nested').mkdir()
+            (auth.parent / 'nested/key').write_bytes(b'private sentinel')
+            (auth.parent / 'link').symlink_to('nested/key')
+            unrelated = root / '.config/hermes-teleoperator/config.json'
+            unrelated.parent.mkdir(parents=True)
+            unrelated.write_bytes(b'{"preserved": true}')
+            before = self.ssh_snapshot(root)
             result = self.invoke(root, binary, '--public-key-file', str(key) + '.pub')
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(old.read_bytes(), original, 'the old inode must not be appended to')
-            self.assertNotEqual(auth.stat().st_ino, old.stat().st_ino)
-            self.assertTrue(auth.read_bytes().startswith(original + b'\nrestrict,command='))
-            self.assertEqual(auth.stat().st_mode & 0o777, 0o400)
-            self.assertEqual(sorted(p.name for p in auth.parent.iterdir()), ['authorized_keys'])
+            self.assertEqual(self.ssh_snapshot(root), before)
+            self.assertEqual(auth.read_bytes(), original)
+            self.assertEqual(unrelated.read_bytes(), b'{"preserved": true}')
 
-    def test_parallel_enrolments_preserve_all_dedicated_keys(self):
+    def test_parallel_installs_print_each_dedicated_entry_without_ssh_state(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             binary = root / 'receiver'
@@ -94,24 +155,14 @@ class StandaloneInstallTests(unittest.TestCase):
                 key = root / f'key{index}'
                 subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(key)], check=True)
                 keys.append(Path(str(key) + '.pub'))
-            wrappers = root / 'wrappers'
-            wrappers.mkdir()
-            # Widen the real read/rename race, without replacing either operation.
-            mv = wrappers / 'mv'
-            mv.write_text('#!/bin/bash\ncase "${!#}" in */authorized_keys) sleep 0.15;; esac\n'
-                          f'exec {shutil.which("mv")} "$@"\n')
-            mv.chmod(0o700)
-            env = {'PATH': str(wrappers) + os.pathsep + os.environ['PATH']}
             with concurrent.futures.ThreadPoolExecutor(max_workers=len(keys)) as pool:
                 results = list(pool.map(lambda key: self.invoke(root, binary, '--public-key-file',
-                                                               str(key), env_extra=env), keys))
+                                                               str(key)), keys))
             for result in results:
                 self.assertEqual(result.returncode, 0, result.stderr)
-            auth = (root / '.ssh/authorized_keys').read_text()
-            self.assertEqual(len([line for line in auth.splitlines() if line]), len(keys))
-            for key in keys:
-                self.assertEqual(auth.count(key.read_text().split()[1]), 1)
-            self.assertEqual(sorted(p.name for p in (root / '.ssh').iterdir()), ['authorized_keys'])
+            self.assertFalse((root / '.ssh').exists())
+            for key, result in zip(keys, results):
+                self.assertEqual(result.stdout.count(key.read_text().split()[1]), 1)
 
     def test_forced_command_survives_both_sshd_dequote_passes(self):
         """sshd strips one backslash layer for the config option, then the login shell parses
@@ -126,8 +177,10 @@ class StandaloneInstallTests(unittest.TestCase):
             subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(key)], check=True)
             result = self.invoke(home, binary, '--public-key-file', str(key) + '.pub')
             self.assertEqual(result.returncode, 0, result.stderr)
-            auth = (home / '.ssh/authorized_keys').read_text()
-            option = re.match(r'restrict,command="((?:\\.|[^"\\])*)"', auth).group(1)
+            entry = next(line for line in result.stdout.splitlines() if line.startswith('restrict,command='))
+            match = re.match(r'restrict,command="((?:\\.|[^"\\])*)"', entry)
+            assert match is not None, entry
+            option = match.group(1)
             # No escapes at all: a safe-charset path is single-quoted and needs none, which is
             # the property that makes it survive sshd's two passes unchanged.
             self.assertNotIn('\\', option)
@@ -135,9 +188,9 @@ class StandaloneInstallTests(unittest.TestCase):
             self.assertEqual(subprocess.check_output(['/bin/sh', '-c', command], text=True),
                              'FORCED_OK')              # pass 2: the user's shell
 
-    def test_metacharacter_home_installs_but_refuses_key_enrolment(self):
+    def test_metacharacter_home_installs_but_refuses_unsafe_manual_entry(self):
         """A path needing shell quoting cannot be forced-command quoted safely, so the installer
-        must fail closed on enrolment rather than write an entry that executes injected text."""
+        must fail closed rather than print an entry that executes injected text."""
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "target 'quoted\" $HOME; user"
             home.mkdir()
@@ -167,7 +220,7 @@ class StandaloneInstallTests(unittest.TestCase):
             self.assertEqual(subprocess.check_output([str(launcher)], text=True), 'BACKSLASH_OK')
 
     def test_sudo_user_rejected_even_for_non_root(self):
-        drop_privileges: Optional[Callable[[], None]] = None
+        credentials = {}
         if os.geteuid() == 0:
             import pwd
             try:
@@ -175,23 +228,21 @@ class StandaloneInstallTests(unittest.TestCase):
             except KeyError:
                 self.skipTest('no unprivileged nobody account')
 
-            def demote():
-                os.setgroups([])
-                os.setgid(nobody.pw_gid)
-                os.setuid(nobody.pw_uid)
-
-            drop_privileges = demote
+            if 'user' not in inspect.signature(subprocess.Popen).parameters:
+                self.skipTest('subprocess credential arguments unavailable')
+            credentials = {'user': nobody.pw_uid, 'group': nobody.pw_gid, 'extra_groups': []}
 
         # Feed stdin so an unprivileged process need not traverse a root-owned checkout.
         env = {**os.environ, 'SUDO_USER': 'original-user', 'HOME': '/nonexistent'}
-        result = subprocess.run(['bash', '-s'], input=(ROOT / 'install.sh').read_text(),
-                                cwd='/', env=env, preexec_fn=drop_privileges,
+        result = subprocess.run(['bash', '-s'], input='id -u\n' + (ROOT / 'install.sh').read_text(),
+                                cwd='/', env=env, **credentials,
                                 capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Do not run via sudo', result.stderr)
+        self.assertEqual(int(result.stdout.strip()), credentials.get('user', os.geteuid()))
 
-    def test_authorized_keys_symlink_and_group_writable_rejected(self):
-        for unsafe in ('symlink', 'group-writable'):
+    def test_manual_entry_does_not_inspect_unsafe_ssh_state(self):
+        for unsafe in ('symlink', 'group-writable', 'fifo'):
             with self.subTest(unsafe=unsafe), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 binary = root / 'receiver'
@@ -204,15 +255,16 @@ class StandaloneInstallTests(unittest.TestCase):
                 target.write_text('existing key\n')
                 if unsafe == 'symlink':
                     auth.symlink_to(target)
+                elif unsafe == 'fifo':
+                    os.mkfifo(auth)
                 else:
                     auth.write_text('existing key\n')
                     auth.chmod(0o620)
+                before = self.ssh_snapshot(root)
                 result = self.invoke(root, binary, '--public-key-file', str(key) + '.pub')
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn('symlink' if unsafe == 'symlink' else 'writable', result.stderr)
-                self.assertEqual(auth.read_text(), 'existing key\n')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.ssh_snapshot(root), before)
                 self.assertEqual(target.read_text(), 'existing key\n')
-                self.assertFalse((root / '.local').exists())
 
     def test_writable_ancestors_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -23,14 +23,9 @@ SCHEMA = {'name': 'teleoperator', 'description': DESCRIPTION, 'parameters': {
 
 
 def identity(kwargs):
-    key = kwargs.get('session_id') or kwargs.get('session_key')
-    if not key:
-        try:
-            from hermes_cli.plugin_session import session_key
-            key = session_key()
-        except ImportError:
-            pass
-    key = key or kwargs.get('task_id')
+    # Hermes supplies these through documented tool/hook/command callbacks.
+    # Never infer identity from process-global environment in a shared gateway.
+    key = kwargs.get('session_id') or kwargs.get('session_key') or kwargs.get('task_id')
     if not isinstance(key, str) or not key:
         raise ValueError('No stable conversation identity; refusing ambiguous routing')
     return key

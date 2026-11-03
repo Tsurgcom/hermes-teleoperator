@@ -55,19 +55,16 @@ secure_path "$config_home"
 if [[ -n $public_key_file ]]; then
     [[ -z $public_key ]] || fail 'Choose public-key OR public-key-file'
     public_key=$(< "$public_key_file")
+    [[ -n $public_key ]] || fail 'Expected one ed25519 public key, never an empty file'
 fi
 if [[ -n $public_key ]]; then
     [[ $public_key != *$'\n'* && $public_key != *$'\r'* && $public_key =~ ^ssh-ed25519[[:space:]][A-Za-z0-9+/=]+([[:space:]].*)?$ ]] || fail 'Expected one ed25519 public key, never a private key'
-    secure_path "$home/.ssh"
-    secure_path "$home/.ssh/authorized_keys"
 fi
 umask 077
 mkdir -p -- "$base" "$(dirname -- "$launcher")" "$config_home"
 chmod 700 -- "$base"
 staging=$(mktemp -d "$base/.install.XXXXXXXX")
-auth_tmp=''
-auth_lock=''
-trap 'rm -rf -- "$staging"; [[ -z $auth_tmp ]] || rm -f -- "$auth_tmp"; [[ -z $auth_lock ]] || rmdir -- "$auth_lock"' EXIT
+trap 'rm -rf -- "$staging"' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -108,30 +105,10 @@ if [[ -n $public_key ]]; then
     # sshd dequotes a forced command TWICE: once for the config option, then again when the
     # user's shell parses it. A path that needs shell quoting loses one layer of backslashes
     # in between, so the entry either fails to start or executes injected text after the `;`.
-    # Only a path that survives both passes byte-for-byte may be enrolled; refuse the rest
-    # instead of writing an entry that looks installed and is not.
-    [[ $launcher =~ ^[A-Za-z0-9/._+-]+$ ]] || fail "Refusing to enrol a key: launcher '$launcher' needs shell quoting, and sshd dequotes command= twice, so it cannot be written safely. Install into a home matching [A-Za-z0-9/._+-], or add the authorized_keys line by hand."
+    # Only a path that survives both passes byte-for-byte may be suggested; refuse the rest
+    # instead of printing an unsafe entry for manual installation.
+    [[ $launcher =~ ^[A-Za-z0-9/._+-]+$ ]] || fail "Refusing to generate a restricted key entry: launcher '$launcher' needs shell quoting, and sshd dequotes command= twice, so it cannot be written safely. Install into a home matching [A-Za-z0-9/._+-], or have an administrator configure a safe forced-command wrapper."
     entry="restrict,command=\"$command\" $key_type $key_data hermes-teleoperator"
-    mkdir -p -- "$home/.ssh"
-    chmod 700 -- "$home/.ssh"
-    auth=$home/.ssh/authorized_keys
-    # mkdir is already required; no flock/runtime dependency. Hold through duplicate checking
-    # and rename so concurrent installers cannot overwrite each other's dedicated keys.
-    for ((attempt=0; ; attempt++)); do
-        if mkdir -- "$home/.ssh/.authorized_keys.lock" 2>/dev/null; then
-            auth_lock=$home/.ssh/.authorized_keys.lock
-            break
-        fi
-        (( attempt < 100 )) || fail "Timed out waiting for $home/.ssh/.authorized_keys.lock; if stale, remove it only after confirming no installer is running"
-        sleep 0.1
-    done
-    secure_path "$auth"
-    [[ ! -e $auth || -f $auth ]] || fail "Not a regular file: $auth"
-    if [[ -f $auth ]]; then
-        while IFS= read -r line || [[ -n $line ]]; do
-            [[ $line != *"$key_data"* || $line == "$entry" ]] || fail 'Key already authorised differently; use a dedicated key'
-        done < "$auth"
-    fi
 fi
 mv -f -- "$staging/receiver" "$base/receiver"
 {
@@ -140,18 +117,7 @@ mv -f -- "$staging/receiver" "$base/receiver"
 chmod 700 -- "$staging/launcher"
 mv -f -- "$staging/launcher" "$launcher"
 if [[ -n $entry ]]; then
-    if [[ ! -f $auth ]] || ! grep -Fxq -- "$entry" "$auth"; then
-        auth_tmp=$(mktemp "$home/.ssh/.authorized_keys.XXXXXXXX")
-        if [[ -f $auth ]]; then
-            cat -- "$auth" > "$auth_tmp"
-        fi
-        # Separate an existing unterminated line without altering other keys.
-        [[ ! -s $auth_tmp ]] || printf '\n' >> "$auth_tmp"
-        printf '%s\n' "$entry" >> "$auth_tmp"
-        [[ ! -f $auth ]] || chmod --reference="$auth" -- "$auth_tmp"
-        mv -f -- "$auth_tmp" "$auth"
-        auth_tmp=''
-    fi
+    printf 'Manual administrator action required: install this restricted authorized_keys entry for the intended SSH user. No SSH authorization files were read or changed.\n%s\n' "$entry"
 fi
 printf 'Installed standalone receiver.\nSSH user: %s\nexecutable: %s\nteleoperator_home: %s\n' "$(id -un)" "$launcher" "$config_home"
 printf 'No Hermes installation or language runtime is required on this computer.\n'

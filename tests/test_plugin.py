@@ -33,6 +33,24 @@ class PluginTests(unittest.TestCase):
         self.assertEqual(json.loads(result)['active'], 'local')
         self.assertIn('local', ctx.commands['teleport']('status', session_id='abc'))
 
+    def test_identity_uses_only_public_callback_context(self):
+        import builtins
+        from unittest.mock import patch
+        from hermes_teleoperator.plugin import identity
+        original = builtins.__import__
+
+        def public_only(name, *args, **kwargs):
+            if name == 'hermes_cli.plugin_session':
+                self.fail('private session import must not be used')
+            return original(name, *args, **kwargs)
+
+        with patch('builtins.__import__', side_effect=public_only):
+            self.assertEqual(identity({'task_id': 'task-a'}), 'task-a')
+            self.assertEqual(identity({'session_id': 'session-a', 'task_id': 'task-a'}), 'session-a')
+            self.assertEqual(identity({'session_key': 'chat-a'}), 'chat-a')
+            with self.assertRaisesRegex(ValueError, 'No stable conversation identity'):
+                identity({})
+
     def test_middleware_returns_error_even_if_controller_raises(self):
         ctx = Context()
         register(ctx)
