@@ -3,8 +3,10 @@ import json
 import os
 from pathlib import Path
 import shlex
+import threading
 
 from .controller import Controller
+from .configuration import add_machine
 
 DESCRIPTION = ('Switch this conversation between local and configured SSH machines. Native terminal, '
                'file and skill tools follow the selected machine. Use search/describe/call for its MCPs. '
@@ -40,19 +42,40 @@ def config_path():
     return Path(home) / 'teleoperator.json'
 
 
+def session_profile():
+    try:
+        from gateway.session_context import get_session_env
+        return get_session_env('HERMES_SESSION_PROFILE', '')
+    except ImportError:
+        return ''
+
+
+def profile_for_home(path):
+    try:
+        from hermes_constants import profile_name_for_home
+        return profile_name_for_home(path)
+    except ImportError:
+        return None
+
+
 def register(ctx):
     # Registration is offline and side-effect-free. Connections start on explicit selection.
     controllers = {}
+    init_lock = threading.RLock()
 
     def controller():
-        if not controllers:
+        with init_lock:
             path = config_path()
-            settings = json.loads(path.read_text()) if path.exists() else {'machines': {}}
-            targets = settings.get('machines', {})
-            if not isinstance(targets, dict) or 'local' in targets:
-                raise ValueError('machines must be an object; local is reserved')
-            controllers['value'] = Controller(targets)
-        return controllers['value']
+            if not controllers:
+                settings = json.loads(path.read_text()) if path.exists() else {'machines': {}}
+                targets = settings.get('machines', {})
+                if not isinstance(targets, dict) or 'local' in targets:
+                    raise ValueError('machines must be an object; local is reserved')
+                controllers['value'] = Controller(targets)
+                controllers['path'] = path
+            elif controllers['path'] != path:
+                raise ValueError('Profile changed; refusing ambiguous configuration')
+            return controllers['value']
 
     def handle(args, **kwargs):
         try:
@@ -106,8 +129,21 @@ def register(ctx):
         except Exception as exc:
             return json.dumps({'error': str(exc)})
 
+    def add_command(raw_args, **kwargs):
+        try:
+            key = identity(kwargs)
+            path = config_path()
+            profile = session_profile()
+            if profile and profile_for_home(path.parent) != profile:
+                raise ValueError('Focused conversation belongs to a different profile; refusing ambiguous configuration')
+            c = controller()
+            add_machine(controllers['path'], raw_args, c)
+            return json.dumps(c.status(key))
+        except Exception as exc:
+            return json.dumps({'error': str(exc), 'teleoperator': {'fallback': False}})
+
     def cleanup():
-        for c in controllers.values(): c.close()
+        if controllers: controllers['value'].close()
 
     def session_end(**kwargs):
         try:
@@ -122,4 +158,6 @@ def register(ctx):
     ctx.register_hook('on_session_end', session_end)
     ctx.register_command('teleport', command, description='Switch machine or show current location',
                          args_hint='[machine|local|back|status|reconnect|disconnect]')
+    ctx.register_command('teleoperator-add', add_command, description='Add a machine without connecting',
+                         args_hint='<JSON object>')
     ctx.on_unload(cleanup)

@@ -55,3 +55,14 @@ class TransportTests(unittest.TestCase):
                 peer.call('ping')
             with self.assertRaisesRegex(TransportError, 'closed'):
                 peer.call('ping')
+
+    def test_malformed_receiver_error_closes_connection(self):
+        code = '''import json, sys
+request = json.loads(sys.stdin.readline())
+print(json.dumps({"id": request["id"], "error": "not an error object"}), flush=True)
+sys.stdin.read()
+'''
+        with RpcProcess([sys.executable, '-c', code]) as peer:
+            with self.assertRaisesRegex(TransportError, 'Connection failed; outcome may be unknown'):
+                peer.call('ping')
+            self.assertTrue(peer.closed)

@@ -4,12 +4,13 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import io
 import shutil
 import socket
 import time
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 import unittest
 from hermes_teleoperator import deploy
@@ -231,6 +232,32 @@ class DeploymentFlowTests(unittest.TestCase):
 
 
 class EnrollmentAndCLITests(unittest.TestCase):
+    def test_unverified_deployment_has_distinct_cli_exit_and_message(self):
+        stderr = io.StringIO()
+        with patch.object(deploy, 'deploy', side_effect=deploy.DeploymentUnverified('inspect target')), \
+             redirect_stderr(stderr):
+            self.assertEqual(deploy.main(['alice@host']), 3)
+        self.assertIn('Deployment requires inspection: inspect target', stderr.getvalue())
+        self.assertNotIn('Deployment failed:', stderr.getvalue())
+
+    def test_invalid_cli_arguments_exit_two_without_deployment(self):
+        for args in ([], ['alice@host', '--port', 'not-a-number'],
+                     ['alice@host', '--unknown']):
+            with self.subTest(args=args):
+                result = subprocess.run(
+                    [sys.executable, '-m', 'hermes_teleoperator.deploy', *args],
+                    capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('error:', result.stderr)
+                self.assertNotIn('Deployment requires inspection:', result.stderr)
+
+    def test_other_deployment_error_exits_one(self):
+        stderr = io.StringIO()
+        with patch.object(deploy, 'deploy', side_effect=deploy.DeployError('failed')), \
+             redirect_stderr(stderr):
+            self.assertEqual(deploy.main(['alice@host']), 1)
+        self.assertIn('Deployment failed: failed', stderr.getvalue())
+
     def test_public_key_validated_locally_never_private_key(self):
         import shutil
         if not shutil.which('ssh-keygen'):
@@ -272,6 +299,79 @@ class EnrollmentAndCLITests(unittest.TestCase):
 
 
 class OfflineExecutionTests(unittest.TestCase):
+    def test_lost_commit_response_reports_unknown_without_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / 'home'
+            home.mkdir(mode=0o700)
+            launcher = home / '.local/bin/hermes-teleoperator-receiver'
+            env = {**os.environ, 'HOME': str(home)}
+            env.pop('SUDO_USER', None)
+            commits = []
+            def run(target, script, **kwargs):
+                result = subprocess.run(['sh', '-c', script], input=kwargs.get('data'),
+                                        capture_output=True, env=env, timeout=30)
+                if result.returncode:
+                    raise deploy.DeployError(result.stderr.decode())
+                if 'DEPLOY_COMMIT' in script:
+                    commits.append(script)
+                    raise deploy.DeployError('SSH response lost')
+                return result.stdout
+            def download(asset, directory):
+                binary = directory / 'receiver'
+                binary.write_bytes(b'verified payload')
+                return binary, hashlib.sha256(binary.read_bytes()).hexdigest()
+            with patch.object(deploy, '_run', side_effect=run), \
+                 patch.object(deploy, 'download_release', side_effect=download), \
+                 patch.object(deploy, '_ping', return_value={}) as ping:
+                with self.assertRaises(deploy.DeploymentUnverified) as caught:
+                    deploy.deploy({'host': 'unused'}, allow_root=True)
+            self.assertIn('outcome unknown', str(caught.exception).lower())
+            self.assertIn('do not retry', str(caught.exception).lower())
+            self.assertIn(str(launcher), str(caught.exception))
+            self.assertIn('SSH response lost', str(caught.exception))
+            self.assertIn('receiver-' + deploy.VERSION, launcher.read_text())
+            self.assertEqual(len(commits), 1)
+            self.assertEqual(ping.call_count, 1)
+
+    def test_post_commit_handshake_failure_reports_committed_without_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / 'home'
+            home.mkdir(mode=0o700)
+            launcher = home / '.local/bin/hermes-teleoperator-receiver'
+            launcher.parent.mkdir(parents=True)
+            launcher.write_text('old launcher')
+            env = {**os.environ, 'HOME': str(home)}
+            env.pop('SUDO_USER', None)
+            commits = []
+            def run(target, script, **kwargs):
+                if 'DEPLOY_COMMIT' in script:
+                    commits.append(script)
+                result = subprocess.run(['sh', '-c', script], input=kwargs.get('data'),
+                                        capture_output=True, env=env, timeout=30)
+                if result.returncode:
+                    raise deploy.DeployError(result.stderr.decode())
+                return result.stdout
+            def download(asset, directory):
+                binary = directory / 'receiver'
+                binary.write_bytes(b'verified payload')
+                return binary, hashlib.sha256(binary.read_bytes()).hexdigest()
+            def ping(target, executable, probe, state):
+                if executable == str(launcher):
+                    raise RuntimeError('live handshake lost')
+                return {}
+            with patch.object(deploy, '_run', side_effect=run), \
+                 patch.object(deploy, 'download_release', side_effect=download), \
+                 patch.object(deploy, '_ping', side_effect=ping):
+                with self.assertRaises(deploy.DeployError) as caught:
+                    deploy.deploy({'host': 'unused'}, allow_root=True)
+            self.assertIn('committed', str(caught.exception).lower())
+            self.assertIn('unverified', str(caught.exception).lower())
+            self.assertIn(str(launcher), str(caught.exception))
+            self.assertIn('do not retry', str(caught.exception).lower())
+            self.assertIn('live handshake lost', str(caught.exception))
+            self.assertIn('receiver-' + deploy.VERSION, launcher.read_text())
+            self.assertEqual(len(commits), 1)
+
     def test_deploy_returns_manual_entry_without_touching_ssh_tree(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / 'home'

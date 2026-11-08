@@ -51,6 +51,46 @@ class StandaloneInstallTests(unittest.TestCase):
             again = self.invoke(home, binary)
             self.assertEqual(again.returncode, 0, again.stderr)
 
+    def test_failed_launcher_switch_preserves_legacy_receiver(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / 'home'
+            base = home / '.local/lib/hermes-teleoperator'
+            base.mkdir(parents=True)
+            old = base / 'receiver'
+            old.write_text('#!/bin/sh\nprintf OLD\n')
+            old.chmod(0o700)
+            launcher = home / '.local/bin/hermes-teleoperator-receiver'
+            launcher.parent.mkdir(parents=True)
+            launcher.write_text(f'#!/bin/sh\nexec "{old}" "$@"\n')
+            launcher.chmod(0o700)
+            original = launcher.read_bytes()
+            binary = root / 'new-receiver'
+            binary.write_text('#!/bin/sh\nprintf NEW\n')
+            commands = root / 'commands'
+            commands.mkdir()
+            mv = commands / 'mv'
+            mv.write_text('#!/bin/bash\nfor arg in "$@"; do\n'
+                          '  case "$arg" in */.local/bin/hermes-teleoperator-receiver) '
+                          'echo simulated-launcher-failure >&2; exit 1;; esac\n'
+                          'done\nexec /usr/bin/mv "$@"\n')
+            mv.chmod(0o700)
+            result = self.invoke(home, binary, env_extra={'PATH': f'{commands}:/usr/bin:/bin'})
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('simulated-launcher-failure', result.stderr)
+            self.assertEqual(launcher.read_bytes(), original)
+            self.assertEqual(subprocess.check_output([str(launcher)], text=True), 'OLD')
+            success = self.invoke(home, binary)
+            self.assertEqual(success.returncode, 0, success.stderr)
+            self.assertEqual(subprocess.check_output([str(launcher)], text=True), 'NEW')
+            upgraded_launcher = launcher.read_bytes()
+            binary.write_text('#!/bin/sh\nprintf LATER\n')
+            failed = self.invoke(home, binary, env_extra={'PATH': f'{commands}:/usr/bin:/bin'})
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertIn('simulated-launcher-failure', failed.stderr)
+            self.assertEqual(launcher.read_bytes(), upgraded_launcher)
+            self.assertEqual(subprocess.check_output([str(launcher)], text=True), 'NEW')
+
     def test_installer_has_no_ssh_state_access(self):
         self.assertNotIn('.ssh', (ROOT / 'install.sh').read_text())
 

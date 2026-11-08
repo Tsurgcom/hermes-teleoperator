@@ -59,6 +59,39 @@ impl Drop for Client {fn drop(&mut self){self.input.take();self.child.wait().unw
  let home=std::env::current_dir().unwrap().join("target/skill-rollback");let _=std::fs::remove_dir_all(&home);std::fs::create_dir_all(&home).unwrap();let mut child=Command::new(env!("CARGO_BIN_EXE_hermes-teleoperator-receiver")).env("TELEOPERATOR_HOME",&home).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();let mut c=Client{input:child.stdin.take(),output:BufReader::new(child.stdout.take().unwrap()),child};
  let r=c.tool("skill_manage",json!({"operations":[{"action":"create","name":"rollback","content":"---\nname: rollback\ndescription: test\n---\nTest"},{"action":"write_file","name":"rollback","file_path":"../outside","file_content":"bad"}]}));assert!(r["error"].is_object());assert!(!home.join("skills/rollback").exists());drop(c);std::fs::remove_dir_all(home).unwrap();
 }
+#[test] fn foreground_workdir_is_rejected_without_mutating_shell_or_running_command() {
+ let mut c=Client::new();
+ let early=c.tool("terminal",json!({"command":"exit 99","workdir":"/","background":false}));assert!(early["error"].is_object(),"{early}");
+ let schema=c.request("describe",json!({"name":"terminal"}));let description=schema["result"]["function"]["parameters"]["properties"]["workdir"]["description"].as_str().unwrap();assert!(description.contains("foreground")&&description.contains("background"),"{schema}");
+ let setup=c.tool("terminal",json!({"command":"cd /; export REJECTION_TEST=original"}));assert_eq!(setup["result"]["exit_code"],0,"{setup}");
+ let marker=std::env::current_dir().unwrap().join("target").join(format!("rejected-marker-{}",std::process::id()));let _=std::fs::remove_file(&marker);
+ for dir in ["/", "/tmp", "", "/nonexistent-teleoperator-workdir"] {
+  let command=format!("printf ran > '{}'; cd /tmp; export REJECTION_TEST=changed",marker.display());
+  let r=c.tool("terminal",json!({"command":command,"workdir":dir}));
+  let message=r["error"]["message"].as_str().expect("foreground workdir must fail");
+  assert!(message.contains("workdir") && message.contains("cd") && message.contains("background"),"{r}");
+  assert!(!marker.exists());
+  let check=c.tool("terminal",json!({"command":"printf '%s:%s' \"$PWD\" \"$REJECTION_TEST\""}));
+  assert_eq!(check["result"]["output"],"/:original","{check}");
+ }
+}
+#[test] fn background_reports_its_starting_directory() {
+ let mut c=Client::new();
+ let init=c.tool("terminal",json!({"command":"cd /; export BG_CWD_TEST=inherited"}));assert_eq!(init["result"]["exit_code"],0,"{init}");
+ let target=std::env::current_dir().unwrap().canonicalize().unwrap();
+ for dir in [Some(target.to_string_lossy().into_owned()),Some(".".to_string()),None] {
+  let mut args=json!({"command":"printf '%s:%s' \"$(pwd -P)\" \"$BG_CWD_TEST\"","background":true});
+  if let Some(w)=&dir {args["workdir"]=json!(w);}
+  let job=c.tool("terminal",args);let reported=job["result"]["cwd"].as_str().expect("background cwd");
+  let id=job["result"]["session_id"].as_str().unwrap();
+  let done=c.tool("process_manage",json!({"action":"wait","session_id":id,"timeout":5}));
+  assert_eq!(done["result"]["exit_code"],0,"{done}");
+  let expected=if dir.is_some(){target.to_str().unwrap()}else{"/"};
+  assert_eq!(done["result"]["output"],format!("{expected}:inherited"),"{done}");
+  assert_eq!(reported,expected,"{job}");
+ }
+ let check=c.tool("terminal",json!({"command":"pwd -P"}));assert_eq!(check["result"]["output"],"/\n");
+}
 #[test] fn background_jobs_inherit_shell_environment() {
  let mut c=Client::new();c.tool("terminal",json!({"command":"export JOB_TOKEN=inherited; cd /tmp"}));
  let job=c.tool("terminal",json!({"command":"printf '%s:%s' \"$JOB_TOKEN\" \"$PWD\"","background":true}));let id=job["result"]["session_id"].as_str().unwrap();

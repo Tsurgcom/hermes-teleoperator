@@ -64,7 +64,8 @@ umask 077
 mkdir -p -- "$base" "$(dirname -- "$launcher")" "$config_home"
 chmod 700 -- "$base"
 staging=$(mktemp -d "$base/.install.XXXXXXXX")
-trap 'rm -rf -- "$staging"' EXIT
+launcher_tmp=''
+trap 'rm -rf -- "$staging"; [[ -z $launcher_tmp ]] || rm -f -- "$launcher_tmp"' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -110,12 +111,17 @@ if [[ -n $public_key ]]; then
     [[ $launcher =~ ^[A-Za-z0-9/._+-]+$ ]] || fail "Refusing to generate a restricted key entry: launcher '$launcher' needs shell quoting, and sshd dequotes command= twice, so it cannot be written safely. Install into a home matching [A-Za-z0-9/._+-], or have an administrator configure a safe forced-command wrapper."
     entry="restrict,command=\"$command\" $key_type $key_data hermes-teleoperator"
 fi
-mv -f -- "$staging/receiver" "$base/receiver"
+# Never replace the executable referenced by an existing launcher. Publish a
+# checksum-named binary first, then atomically switch the launcher to it.
+installed_binary=$base/receiver-$digest
+mv -fT -- "$staging/receiver" "$installed_binary"
+launcher_tmp=$(mktemp "$(dirname -- "$launcher")/.hermes-teleoperator-launcher.XXXXXXXX")
 {
-    printf '#!/bin/sh\nexport TELEOPERATOR_HOME=%s\nexec %s "$@"\n' "$(quote "$config_home")" "$(quote "$base/receiver")"
-} > "$staging/launcher"
-chmod 700 -- "$staging/launcher"
-mv -f -- "$staging/launcher" "$launcher"
+    printf '#!/bin/sh\nexport TELEOPERATOR_HOME=%s\nexec %s "$@"\n' "$(quote "$config_home")" "$(quote "$installed_binary")"
+} > "$launcher_tmp"
+chmod 700 -- "$launcher_tmp"
+mv -fT -- "$launcher_tmp" "$launcher"
+launcher_tmp=''
 if [[ -n $entry ]]; then
     printf 'Manual administrator action required: install this restricted authorized_keys entry for the intended SSH user. No SSH authorization files were read or changed.\n%s\n' "$entry"
 fi

@@ -20,6 +20,10 @@ class DeployError(RuntimeError):
     """A failed deployment is not automatically retried."""
 
 
+class DeploymentUnverified(DeployError):
+    """The launcher switch committed or its outcome is unknown; inspect before retrying."""
+
+
 # Every target published by release.yml, including non-default glibc variants.
 TARGETS = (
     'x86_64-unknown-linux-musl', 'aarch64-unknown-linux-musl',
@@ -354,7 +358,8 @@ chmod 700 "$stage/receiver"
             installed_binary = base + '/receiver-' + VERSION + '-' + digest
             launcher_text = ('#!/bin/sh\nexport TELEOPERATOR_HOME=' + shlex.quote(config) +
                              '\nexec ' + shlex.quote(installed_binary) + ' "$@"\n')
-            _run(target, context + _bindings(installed=installed_binary, content=launcher_text) + SAFE_SH + r'''
+            try:
+                _run(target, context + _bindings(installed=installed_binary, content=launcher_text) + SAFE_SH + r'''
 # DEPLOY_COMMIT: only reached after successful transfer, hash and handshake.
 secure_path "$installed"
 [ ! -e "$installed" ] || [ -f "$installed" ] || fail 'Installed binary is not regular'
@@ -369,7 +374,18 @@ chmod 700 "$launcher_tmp"
 mv -f "$stage/receiver" "$installed"
 mv -f "$launcher_tmp" "$launcher"
 ''')
-            result['handshake'] = _ping(target, launcher, probe, config)
+            except Exception as exc:
+                raise DeploymentUnverified(
+                    f'Launcher commit outcome unknown at {launcher}; it may have changed. '
+                    f'Do not retry; inspect the target first. Cause: {exc}'
+                ) from exc
+            try:
+                result['handshake'] = _ping(target, launcher, probe, config)
+            except Exception as exc:
+                raise DeploymentUnverified(
+                    f'Launcher switch committed at {launcher}, but live handshake is unverified. '
+                    f'Do not retry; inspect the target first. Cause: {exc}'
+                ) from exc
             if public_key:
                 # The administrator must explicitly install this dedicated restricted key.
                 # Deployment never inspects or changes remote SSH authorization state.
@@ -424,6 +440,9 @@ def main(argv=None):
                         teleoperator_home=args.teleoperator_home, public_key=key, probe_only=args.probe)
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
+    except DeploymentUnverified as exc:
+        print(f'Deployment requires inspection: {exc}', file=sys.stderr)
+        return 3
     except (DeployError, OSError, ValueError, RuntimeError) as exc:
         print(f'Deployment failed: {exc}', file=sys.stderr)
         return 1

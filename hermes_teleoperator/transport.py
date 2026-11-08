@@ -94,8 +94,16 @@ class RpcProcess:
                 if isinstance(frame, Exception):
                     raise frame
                 response = json.loads(frame)
-                if response.get('id') != request_id:
-                    raise ValueError('Mismatched response id')
+                if not isinstance(response, dict) or response.get('id') != request_id:
+                    raise ValueError('Invalid receiver response id')
+                has_result = 'result' in response
+                has_error = 'error' in response
+                if has_result == has_error:
+                    raise ValueError('Invalid receiver response envelope')
+                if has_error:
+                    error = response['error']
+                    if not isinstance(error, dict) or not isinstance(error.get('message'), str):
+                        raise ValueError('Invalid receiver response error')
             except Exception as exc:
                 self.close()
                 detail = self._stderr.decode(errors='replace').strip()

@@ -103,6 +103,10 @@ class Controller:
         state = self._session(key)
         with state.lock:
             name = name or state.active
+            if name == 'local':
+                raise ValueError('Local has no connection')
+            if name not in self.targets:
+                raise ValueError(f'Unconfigured machine: {name}')
             if name in state.peers:
                 state.peers.pop(name).close()
             state.disconnected.add(name)

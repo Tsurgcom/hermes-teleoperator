@@ -63,6 +63,12 @@ hermes plugins doctor /absolute/path/to/hermes-teleoperator --ci
 
 Restart the conversation after enabling it. Alternatively pip-install the gateway package; choose one discovery method, not both. No core files are patched.
 
+### Desktop companion
+
+The optional `desktop/plugin.js` adds a Teleoperator control to the bottom status bar in Hermes Desktop. Enable the desktop half in Capabilities → Plugins as well as the agent plugin; the two toggles are independent. Click the control to see and select machines for the focused conversation. The plus button opens a manual form for adding a machine: it saves settings only and never connects, installs a receiver, authorizes a key, or accepts private key contents. Install and enable the matching updated gateway plugin and restart the gateway before using the form. Connected machines show their hostname when available and can be disconnected; a disconnected selected machine remains selected and can be reconnected. Switching is disabled while that conversation is busy. Status is a snapshot: open the control or use Refresh after changing location elsewhere. Errors are shown rather than assuming local. Machine names `status`, `back`, `disconnect` and `reconnect` cannot be selected from the control because they are reserved slash-command words. This companion controls tool routing, not a remote desktop.
+
+The control requires a live conversation and a Hermes version supporting desktop plugins, focused session state and `slash.exec` for plugin commands. It does not configure SSH or deploy receivers.
+
 Configure and verify normal SSH first. Verify the host fingerprint through a trusted channel. Teleoperator uses strict host-key checking, batch authentication, no agent forwarding, no port forwarding and no automatic mutation retries. SSH aliases and ProxyJump work.
 
 ## Receiver installation
@@ -84,6 +90,8 @@ The helper probes the destination's actual userland ABI over strict SSH, downloa
 Selection prefers static musl on supported Linux targets, falling back to glibc only for s390x and ppc64le with proven version floors. It checks ELF word size/endianness (including 32-bit userland on a 64-bit kernel), ARM hard-float, RISC-V ISA, CPU/kernel minimums, macOS version and Rosetta. Ambiguous or unsupported combinations fail rather than guessing. A staged receiver must pass an exact version/protocol/identity handshake before the live launcher switches atomically. Existing skills, config and unrelated SSH keys are preserved; a failed transfer or staged handshake leaves the live launcher unchanged. Old content-addressed binaries are retained for inspection, not automatically pruned. Disconnect live sessions before upgrading. SSH mutations are never automatically retried; inspect ambiguous failures before rerunning.
 
 Gateway and receiver versions must match exactly when connecting. Upgrade/reload the gateway, deploy from that same environment, then reconnect. Old receivers with no version field are rejected; changing a JSON setting cannot bypass parity. Run `--probe` before mutating a target; a missing exact release asset is an error, never a fallback to an older release.
+
+Deployment exit code 3 means the live launcher switch committed but its final handshake failed, or the commit command failed and the switch outcome is conservatively treated as unknown. The error identifies the launcher and original cause. Do not retry automatically: inspect the target launcher and receiver first. No automatic rollback is attempted. Exit code 1 denotes other deployment errors; exit code 2 denotes invalid CLI arguments. Neither deployment error code implies that staging left no remote files. Successful deployment exits 0.
 
 The gateway generates a dedicated key with `ssh-keygen -t ed25519 -f "$HOME/.ssh/teleoperator-workstation"`. Its private key stays on the gateway; setup accepts only its `.pub` file. Deployment returns `ssh_authorization_entry` containing a restricted, forced-command entry. Review that entry and have the destination administrator add it to that account's SSH authorization file; neither installer reads or modifies SSH authorization files. Do not replace an existing administrative key. Keep separate administrative access: once authorized, the Teleoperator key is forced to the receiver and cannot run deployment/repair shell commands.
 
@@ -113,7 +121,9 @@ SUM=$(sha256sum "$BIN"); SUM=${SUM%% *}
 bash install.sh --binary "$BIN" --sha256 "$SUM"
 ```
 
-Cargo is needed on the build machine only. The installer writes `~/.local/lib/hermes-teleoperator/receiver` and a launcher at `~/.local/bin/hermes-teleoperator-receiver`. It rejects unsafe writable/foreign-owned/symlinked installation paths. It does not install Hermes, start a daemon, or read or modify SSH authorization files. Disconnect before upgrading.
+Cargo is needed on the build machine only. The installer writes a checksum-named binary at `~/.local/lib/hermes-teleoperator/receiver-<sha256>` and atomically switches the launcher at `~/.local/bin/hermes-teleoperator-receiver`. Earlier binaries, including the legacy `receiver`, are retained; repeated upgrades consume disk space and require manual cleanup when no launcher or process uses them. It rejects unsafe writable/foreign-owned/symlinked installation paths. It does not install Hermes, start a daemon, or read or modify SSH authorization files. Disconnect before upgrading.
+
+If upgrading an older Python-based receiver whose SSH forced command points to `.local/lib/hermes-teleoperator/python`, an administrator must update the restricted key's forced command to the new launcher. Installation does not change SSH authorization.
 
 When a public key is supplied, the installer prints an entry using `restrict` and a forced launcher command for manual administrator approval and installation. It does not authorize the key. The restriction controls connection entry, not shell commands the receiver can execute with the user's authority. Use a dedicated SSH account for narrower authority. Keep separate administrative SSH access: the restricted key cannot run ordinary setup/repair commands.
 
@@ -174,7 +184,7 @@ The receiver uses MCP initialize/tools-list/tools-call directly. It advertises n
 /teleport reconnect workstation
 ```
 
-Terminal, file and skill tool names follow the selected computer. The remote implementation is standalone, not the Hermes native dispatcher. Use `teleoperator(action="describe", name="terminal")` for the actual remote schema; unsupported options return errors rather than silently doing something else.
+Terminal, file and skill tool names follow the selected computer. The remote implementation is standalone, not the Hermes native dispatcher. Use `teleoperator(action="describe", name="terminal")` for the actual remote schema; unsupported options return errors rather than silently doing something else. Foreground terminal calls reject `workdir`: use an explicit `cd` in the command (which changes the persistent shell's cwd), or use `background: true` with `workdir`. Background relative workdirs resolve against the receiver's cwd, and the response reports the job's physical starting cwd.
 
 The model-facing gateway supports:
 

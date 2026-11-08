@@ -101,6 +101,14 @@ class ControllerTests(unittest.TestCase):
             self.assertTrue(source.exists())
         self.assertEqual(len(self.peers), 1)
 
+    def test_disconnect_rejects_local_and_unconfigured_machines(self):
+        c = self.controller
+        with self.assertRaisesRegex(ValueError, 'Local has no connection'):
+            c.disconnect('s')
+        with self.assertRaisesRegex(ValueError, 'Unconfigured machine'):
+            c.disconnect('s', 'not-configured')
+        self.assertEqual(c.status('s')['active'], 'local')
+
     def test_remote_call_rejects_unsupported_tool_even_when_explicit(self):
         c = self.controller
         c.switch('s', 'alpha')
