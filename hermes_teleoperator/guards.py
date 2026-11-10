@@ -24,7 +24,7 @@ Both are fail-closed here. A guard that cannot be reached (older/newer Hermes,
 a raising call, a non-dict verdict) refuses the remote call instead of running
 it unguarded — the plugin never trades a guard for availability.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # The backend name the command gate evaluates: remote SSH authority. It is not a
 # container backend, so the container fast path cannot approve a command for us.
@@ -55,6 +55,8 @@ class Decision:
     allowed: bool
     message: str = ''
     source: str = ''
+    status: str = 'blocked'
+    details: dict = field(default_factory=dict)
 
 
 def _blocked(message):
@@ -65,7 +67,9 @@ def _verdict(verdict, source):
     """Normalise a Hermes approval verdict to a Decision.
 
     Anything that is not an explicit ``approved: True`` dict is a refusal: a
-    missing, malformed or raising verdict must never read as consent.
+    missing, malformed or raising verdict must never read as consent. A pending
+    gateway card keeps its ``pending_approval`` status and metadata so the
+    caller can wait for the user's decision instead of reporting a hard denial.
     """
     if not isinstance(verdict, dict):
         return _blocked(f'Hermes {source} returned no verdict; refusing remote execution')
@@ -74,7 +78,14 @@ def _verdict(verdict, source):
     message = verdict.get('message') or verdict.get('error') or verdict.get('description')
     if not isinstance(message, str) or not message:
         message = f'Hermes {source} did not approve this remote call'
-    return Decision(False, message, source)
+    status = verdict.get('status')
+    if not isinstance(status, str) or not status:
+        status = 'blocked'
+    details = {key: verdict[key] for key in
+               ('command', 'description', 'pattern_key', 'allow_permanent',
+                'approval_pending', 'smart_denied', 'user_summary')
+               if key in verdict}
+    return Decision(False, message, source, status, details)
 
 
 def target_key(tool_name, args):

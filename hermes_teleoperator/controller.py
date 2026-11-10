@@ -157,10 +157,14 @@ class Controller:
                                           'refusing remote execution', 'failed-closed')
 
     def _blocked(self, machine, decision):
-        return {'error': decision.message or 'Blocked by Hermes approval',
-                'status': 'blocked',
-                'teleoperator': {'machine': machine, 'fallback': False,
-                                 'guard': decision.source or 'hermes'}}
+        result = {**decision.details,
+                  'error': decision.message or 'Blocked by Hermes approval',
+                  'status': decision.status or 'blocked',
+                  'teleoperator': {'machine': machine, 'fallback': False,
+                                   'guard': decision.source or 'hermes'}}
+        if decision.status == 'pending_approval':
+            result['approval_pending'] = True
+        return result
 
     def route(self, key, name, args, next_call):
         state = self._session(key)
