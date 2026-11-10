@@ -38,6 +38,7 @@ jobs:
           cargo test --locked --manifest-path receiver/Cargo.toml
           mkdir -p /run/sshd
           bash -n install.sh
+          python3 scripts/sync_receiver_digests.py --check
           python3 -m unittest discover -s tests -v
       - name: Aarch64 receiver tests under QEMU
         if: matrix.target == 'aarch64-unknown-linux-musl'
@@ -61,9 +62,14 @@ jobs:
   # musl = fully static, no libc on the destination.
   # glibc = dynamic, pinned to a glibc 2.17 symbol floor so it also runs on
   # RHEL/CentOS 7-era systems. Same source, two linkage models.
+  # GitHub-hosted runners only: provenance is attested to a runner GitHub owns.
   binary-linux:
     needs: test
-    runs-on: [self-hosted, Linux, X64, teleoperator]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -100,7 +106,7 @@ jobs:
             glibc: "2.17"
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           targets: ${{ matrix.target }}
       - uses: mlugg/setup-zig@v2
@@ -108,7 +114,7 @@ jobs:
           version: 0.14.1
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-zigbuild
+          tool: cargo-zigbuild@0.24.1
       - name: Build (${{ matrix.libc }})
         run: |
           set -eu
@@ -152,18 +158,26 @@ jobs:
           name: receiver-${{ matrix.target }}
           path: artifacts/*
           if-no-files-found: error
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: artifacts/hermes-teleoperator-receiver-${{ matrix.target }}
 
   # macOS needs a macOS linker and SDK, so it builds on a hosted arm64 runner.
   binary-apple:
     needs: test
     runs-on: macos-14
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
         target: [aarch64-apple-darwin, x86_64-apple-darwin]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           targets: ${{ matrix.target }}
       - name: Build
@@ -185,20 +199,53 @@ jobs:
           name: receiver-${{ matrix.target }}
           path: artifacts/*
           if-no-files-found: error
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: artifacts/hermes-teleoperator-receiver-${{ matrix.target }}
 
   publish:
     if: startsWith(github.ref, 'refs/tags/')
     needs: [binary-linux, binary-apple]
-    runs-on: [self-hosted, Linux, X64, teleoperator]
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
+      - uses: actions/checkout@v4
+      - name: Verify tag, version and tagged commit
+        run: |
+          set -eu
+          python3 - <<'PY'
+          import os
+          from hermes_teleoperator.version import VERSION
+
+          tag = os.environ['GITHUB_REF_NAME']
+          expected = 'v' + VERSION
+          if tag != expected:
+              raise SystemExit(f'release tag {tag} does not match VERSION {expected}')
+          print(f'release tag {tag} matches VERSION {VERSION}')
+          PY
+          # actions/checkout checks out the tag's commit on a tag push. Refuse to
+          # publish if that is not the commit GitHub associated with the ref.
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA" || {
+            echo 'release checkout is not the tagged commit' >&2
+            exit 1
+          }
+          git rev-parse HEAD
       - uses: actions/download-artifact@v4
         with:
           pattern: receiver-*
           merge-multiple: true
           path: artifacts
       - run: cd artifacts && sha256sum hermes-teleoperator-receiver-* > SHA256SUMS && cat SHA256SUMS
+      - name: Refuse assets that differ from the source-pinned digests
+        run: python3 scripts/verify_release_digests.py artifacts
+      - name: Attest the published checksum manifest and assets
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: artifacts/SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
           draft: true
@@ -210,6 +257,8 @@ jobs:
             `*-linux-gnu`: dynamically linked, with a glibc 2.17 symbol floor (2.19 for powerpc64le). Matching CPU ABI and dynamic loader are also required.
             `*-apple-darwin`: macOS binaries; unsigned and not notarised, so Gatekeeper needs an override.
 
-            SHA256SUMS verifies release bytes; it is not a publisher signature.
+            Installers verify each asset against SHA256 digests committed in the plugin source for this tag. SHA256SUMS is published for completeness and cross-checked; it is not the trust root.
 
-            Built on the Teleoperator self-hosted runner (Linux) and a hosted macOS arm64 runner. Only x86_64/aarch64 Linux plus native Rust tests are executed; other architectures are cross-compiled and the macOS binaries are built but not tested. Windows is not shipped: the receiver is Unix-only by design (openat/linkat/renameat file handling, Unix sockets, POSIX process groups, Bash).
+            Assets are built on GitHub-hosted runners and carry build provenance attestations. Verify with `gh attestation verify <asset> --repo Tsurgcom/hermes-teleoperator`.
+
+            Built on GitHub-hosted Ubuntu 24.04 and macOS 14 runners. Only x86_64/aarch64 Linux plus native Rust tests are executed; other architectures are cross-compiled and the macOS binaries are built but not tested. Windows is not shipped: the receiver is Unix-only by design (openat/linkat/renameat file handling, Unix sockets, POSIX process groups, Bash).

@@ -13,7 +13,7 @@ import time
 import urllib.request
 
 from .transport import RpcProcess, ssh_argv, ssh_environment
-from .version import VERSION
+from .version import RECEIVER_SHA256, VERSION
 
 
 class DeployError(RuntimeError):
@@ -69,10 +69,26 @@ def _fetch(url, destination, limit):
             output.write(chunk)
 
 
-def download_release(asset, directory, *, fetch=None):
-    """Fetch only the exact tag to a gateway-owned private temporary directory."""
+def pinned_digest(asset, pins=None):
+    """Return the source-committed SHA256 for ``asset`` at the exact tag.
+
+    Source is the trust root. A release manifest is never consulted here, and a
+    missing/unknown pin fails closed instead of falling back to ``SHA256SUMS``.
+    """
     if asset not in ASSETS:
         raise DeployError('Unknown release asset')
+    pins = RECEIVER_SHA256 if pins is None else pins
+    digest = pins.get(asset)
+    if not digest:
+        raise DeployError(f'No SHA256 pinned in source for {asset} at v{VERSION}; refusing release download')
+    if not re.fullmatch(r'[a-f0-9]{64}', digest):
+        raise DeployError('Malformed SHA256 pinned in source')
+    return digest
+
+
+def download_release(asset, directory, *, fetch=None, pins=None):
+    """Fetch only the exact tag to a gateway-owned private temporary directory."""
+    expected = pinned_digest(asset, pins)
     fetch = fetch or _fetch
     base = 'https://github.com/Tsurgcom/hermes-teleoperator/releases/download/' + validate_version()
     manifest = directory / 'SHA256SUMS'
@@ -93,9 +109,16 @@ def download_release(asset, directory, *, fetch=None):
         raise DeployError(f'Exact release asset missing from SHA256SUMS: {asset}')
     binary = directory / 'receiver'
     fetch(base + '/' + asset, binary, MAX_BINARY)
-    if not 0 < binary.stat().st_size <= MAX_BINARY or hashlib.sha256(binary.read_bytes()).hexdigest() != entries[asset]:
-        raise DeployError('Release binary checksum mismatch or invalid size')
-    return binary, entries[asset]
+    actual = hashlib.sha256(binary.read_bytes()).hexdigest()
+    if not 0 < binary.stat().st_size <= MAX_BINARY or actual != expected:
+        # A compromised release rewrites both the asset and its manifest. The
+        # source pin is authoritative, so the binary is checked before the
+        # downloaded manifest is allowed to say anything.
+        raise DeployError('Release binary does not match the SHA256 pinned in source')
+    if entries[asset] != expected:
+        raise DeployError(
+            f'SHA256SUMS disagrees with the SHA256 pinned in source for {asset}; refusing rewritten release')
+    return binary, expected
 
 
 
