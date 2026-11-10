@@ -44,7 +44,7 @@ Remote MCP access requires explicit expose_mcp and mcp_servers entries in $TELEO
 
 Human shortcuts: `/teleport <machine>`, `/teleport local`, `/teleport back`, `/teleport status`, `/teleport disconnect`, `/teleport reconnect <machine>`.
 
-For a small file, use `action="transfer"` with explicit `source_machine`, `source`, `destination_machine`, `destination`, and `move=false`. Destinations must not exist; parent directories must exist. Use `move=true` only when source deletion is intended, and stop concurrent writers first.
+For a small file, use `action="transfer"` with explicit `source_machine`, `source`, `destination_machine`, `destination`, and `move=false`. Destinations must not exist; parent directories must exist. For a gateway-local endpoint, the path must resolve inside the configured `transfer_dir`; `$HERMES_HOME` and `~/.ssh` are refused. Moving a gateway-local source requires `allow_local_delete: true` in the gateway config. Use `move=true` only when source deletion is intended, and stop concurrent writers first.
 
 ## Install and recover over SSH
 

@@ -69,8 +69,8 @@ class PluginTests(unittest.TestCase):
         calls = []
 
         class StubController:
-            def __init__(self, targets):
-                calls.append(('init', dict(targets)))
+            def __init__(self, targets, **kwargs):
+                calls.append(('init', dict(targets), kwargs))
             def run_explicit(self, key, name, args, machine=None):
                 calls.append(('run_explicit', key, name, args, machine))
                 return {'content': 'ok', 'teleoperator': {'machine': 'alpha'}}
@@ -89,7 +89,7 @@ class PluginTests(unittest.TestCase):
             result = json.loads(ctx.tools['teleoperator']['handler'](
                 {'action': 'call', 'name': 'mcp__gitea__list_repos', 'arguments': {'q': 1}},
                 session_id='chat-1'))
-        self.assertEqual(calls[0], ('init', {'alpha': {'host': 'alpha'}}))
+        self.assertEqual(calls[0][0:2], ('init', {'alpha': {'host': 'alpha'}}))
         self.assertEqual(calls[1], ('run_explicit', 'chat-1', 'mcp__gitea__list_repos', {'q': 1}, None))
         self.assertEqual(result['content'], 'ok')
 
@@ -100,3 +100,84 @@ class PluginTests(unittest.TestCase):
         result = json.loads(ctx.tools['teleoperator']['handler']({'action': 'call', 'name': 'mcp__x__y'},))
         self.assertIn('error', result)
         self.assertFalse(result['teleoperator']['fallback'])
+
+    def test_settings_validation(self):
+        from hermes_teleoperator.configuration import load_settings
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'teleoperator.json'
+            self.assertEqual(load_settings(path), {'machines': {}})
+            for value in ('relative/path', '', 5, None):
+                with self.subTest(transfer_dir=value):
+                    path.write_text(json.dumps({'transfer_dir': value}))
+                    with self.assertRaisesRegex(ValueError, 'transfer_dir'):
+                        load_settings(path)
+            path.write_text(json.dumps({'allow_local_delete': 'yes'}))
+            with self.assertRaisesRegex(ValueError, 'allow_local_delete'):
+                load_settings(path)
+            path.write_text(json.dumps({'machines': []}))
+            with self.assertRaisesRegex(ValueError, 'machines'):
+                load_settings(path)
+            path.write_text(json.dumps({'machines': {}, 'transfer_dir': '/tmp/transfer',
+                                        'allow_local_delete': True}))
+            settings = load_settings(path)
+            self.assertEqual(settings['transfer_dir'], '/tmp/transfer')
+            self.assertTrue(settings['allow_local_delete'])
+
+    def test_transfer_config_is_wired_and_moves_are_gated(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            transfer = base / 'transfer'
+            transfer.mkdir()
+            config = base / 'teleoperator.json'
+            config.write_text(json.dumps({'machines': {}, 'transfer_dir': str(transfer)}))
+            with patch('hermes_teleoperator.plugin.config_path', return_value=config), \
+                 patch('hermes_teleoperator.files._hermes_home',
+                       return_value=Path('/nonexistent-test-hermes')), \
+                 patch('hermes_teleoperator.files._gateway_home',
+                       return_value=Path('/nonexistent-test-home')):
+                ctx = Context()
+                register(ctx)
+                self.addCleanup(ctx.cleanup)
+                handler = ctx.tools['teleoperator']['handler']
+                source = transfer / 'source.bin'
+                source.write_bytes(b'gateway payload')
+                destination = transfer / 'destination.bin'
+                args = {'action': 'transfer', 'source_machine': 'local', 'source': str(source),
+                        'destination_machine': 'local', 'destination': str(destination),
+                        'move': True}
+                result = json.loads(handler(args, session_id='s'))
+                self.assertIn('error', result)
+                self.assertIn('allow_local_delete', result['error'])
+                self.assertTrue(source.exists())
+                self.assertFalse(destination.exists())
+                result = json.loads(handler({**args, 'move': False}, session_id='s'))
+                self.assertEqual(result['size'], len(b'gateway payload'))
+                self.assertEqual(destination.read_bytes(), b'gateway payload')
+                outside = base / 'outside.bin'
+                result = json.loads(handler({**args, 'move': False, 'destination': str(outside)},
+                                            session_id='s'))
+                self.assertIn('error', result)
+                self.assertIn('outside', result['error'])
+                self.assertFalse(outside.exists())
+            config.write_text(json.dumps({'machines': {}, 'transfer_dir': str(transfer),
+                                          'allow_local_delete': True}))
+            with patch('hermes_teleoperator.plugin.config_path', return_value=config), \
+                 patch('hermes_teleoperator.files._hermes_home',
+                       return_value=Path('/nonexistent-test-hermes')), \
+                 patch('hermes_teleoperator.files._gateway_home',
+                       return_value=Path('/nonexistent-test-home')):
+                ctx = Context()
+                register(ctx)
+                self.addCleanup(ctx.cleanup)
+                handler = ctx.tools['teleoperator']['handler']
+                source = transfer / 'moved-source.bin'
+                source.write_bytes(b'move me')
+                destination = transfer / 'moved-destination.bin'
+                result = json.loads(handler({'action': 'transfer', 'source_machine': 'local',
+                                             'source': str(source), 'destination_machine': 'local',
+                                             'destination': str(destination), 'move': True},
+                                            session_id='s'))
+                self.assertTrue(result['moved'])
+                self.assertFalse(source.exists())
+                self.assertEqual(destination.read_bytes(), b'move me')

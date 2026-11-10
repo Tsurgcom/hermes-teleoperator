@@ -1,5 +1,7 @@
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 from hermes_teleoperator.version import VERSION
 from hermes_teleoperator import guards
@@ -26,6 +28,15 @@ class Peer:
         self.closed = True
 
 
+class FilePeer(Peer):
+    """Stand-in for the unchanged remote file protocol in controller tests."""
+    def call(self, method, params=None):
+        if method.startswith('file_'):
+            from hermes_teleoperator.files import file_operation
+            return file_operation(method, params)
+        return super().call(method, params)
+
+
 class ControllerTests(unittest.TestCase):
     def setUp(self):
         self.peers = []
@@ -33,6 +44,13 @@ class ControllerTests(unittest.TestCase):
             peer = Peer(target['host'])
             self.peers.append(peer)
             return peer
+        # Keep temporary transfer fixtures outside the real gateway secrets,
+        # even when the test runner's TMPDIR lives under HERMES_HOME.
+        for target, value in (('_hermes_home', Path('/nonexistent-test-hermes')),
+                              ('_gateway_home', Path('/nonexistent-test-home'))):
+            patcher = patch(f'hermes_teleoperator.files.{target}', return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.controller = Controller({'alpha': {'host': 'alpha'}, 'beta': {'host': 'beta'}}, factory,
                                      guard=allow)
         self.addCleanup(self.controller.close)
@@ -79,16 +97,10 @@ class ControllerTests(unittest.TestCase):
     def test_transfer_copies_before_deleting_and_preserves_selection(self):
         c = self.controller
         c.switch('s', 'alpha')
-        import tempfile
-        from pathlib import Path
-        from hermes_teleoperator.files import file_operation
-        class FilePeer(Peer):
-            def call(self, method, params=None):
-                if method.startswith('file_'):
-                    return file_operation(method, params)
-                return super().call(method, params)
         c.factory = lambda target: FilePeer(target['host'])
         with tempfile.TemporaryDirectory() as tmp:
+            c.transfer_dir = tmp
+            c.allow_local_delete = True
             source, dest = Path(tmp) / 'in', Path(tmp) / 'out'
             source.write_bytes(b'payload')
             result = c.transfer('s', 'local', str(source), 'beta', str(dest), move=True)
@@ -97,13 +109,87 @@ class ControllerTests(unittest.TestCase):
             self.assertFalse(source.exists())
             self.assertEqual(c.status('s')['active'], 'alpha')
 
+    def test_local_transfer_requires_configured_transfer_dir(self):
+        c = self.controller
+        with tempfile.TemporaryDirectory() as tmp:
+            source, dest = Path(tmp) / 'source', Path(tmp) / 'dest'
+            source.write_bytes(b'payload')
+            with self.assertRaisesRegex(ValueError, 'transfer_dir'):
+                c.transfer('s', 'local', str(source), 'beta', str(dest))
+            self.assertTrue(source.exists())
+            self.assertFalse(dest.exists())
+            self.assertEqual(self.peers, [])
+
+    def test_move_from_local_is_gated_before_any_remote_write(self):
+        c = self.controller
+        c.factory = lambda target: FilePeer(target['host'])
+        with tempfile.TemporaryDirectory() as tmp:
+            transfer = Path(tmp) / 'transfer'
+            transfer.mkdir()
+            c.transfer_dir = transfer
+            c.allow_local_delete = False
+            source, dest = transfer / 'source', Path(tmp) / 'remote-dest'
+            source.write_bytes(b'payload')
+            with self.assertRaisesRegex(ValueError, 'allow_local_delete'):
+                c.transfer('s', 'local', str(source), 'beta', str(dest), move=True)
+            self.assertTrue(source.exists())
+            self.assertFalse(dest.exists())
+            self.assertEqual(self.peers, [])
+            c.allow_local_delete = True
+            result = c.transfer('s', 'local', str(source), 'beta', str(dest), move=True)
+            self.assertTrue(result['moved'])
+            self.assertFalse(source.exists())
+            self.assertEqual(dest.read_bytes(), b'payload')
+
+    def test_move_to_local_does_not_need_gateway_delete_permission(self):
+        c = self.controller
+        c.factory = lambda target: FilePeer(target['host'])
+        with tempfile.TemporaryDirectory() as tmp:
+            transfer = Path(tmp) / 'transfer'
+            transfer.mkdir()
+            c.transfer_dir = transfer
+            c.allow_local_delete = False
+            source, dest = Path(tmp) / 'remote-source', transfer / 'local-dest'
+            source.write_bytes(b'payload')
+            result = c.transfer('s', 'beta', str(source), 'local', str(dest), move=True)
+            self.assertTrue(result['moved'])
+            self.assertFalse(source.exists())
+            self.assertEqual(dest.read_bytes(), b'payload')
+            self.assertEqual(c.status('s')['active'], 'local')
+
+    def test_local_destination_outside_transfer_dir_is_refused(self):
+        c = self.controller
+        c.factory = lambda target: FilePeer(target['host'])
+        with tempfile.TemporaryDirectory() as tmp:
+            transfer = Path(tmp) / 'transfer'
+            transfer.mkdir()
+            c.transfer_dir = transfer
+            source, dest = Path(tmp) / 'remote-source', Path(tmp) / 'outside'
+            source.write_bytes(b'payload')
+            with self.assertRaisesRegex(ValueError, 'outside'):
+                c.transfer('s', 'beta', str(source), 'local', str(dest), move=True)
+            self.assertTrue(source.exists())
+            self.assertFalse(dest.exists())
+
+    def test_remote_to_remote_transfer_needs_no_gateway_transfer_config(self):
+        c = self.controller
+        c.factory = lambda target: FilePeer(target['host'])
+        c.transfer_dir = None
+        c.allow_local_delete = False
+        with tempfile.TemporaryDirectory() as tmp:
+            source, dest = Path(tmp) / 'source', Path(tmp) / 'dest'
+            source.write_bytes(b'remote payload')
+            result = c.transfer('s', 'alpha', str(source), 'beta', str(dest), move=True)
+            self.assertTrue(result['moved'])
+            self.assertFalse(source.exists())
+            self.assertEqual(dest.read_bytes(), b'remote payload')
+
     def test_disconnect_does_not_reconnect_on_transfer(self):
         c = self.controller
         c.switch('s', 'alpha')
         c.disconnect('s')
-        import tempfile
-        from pathlib import Path
         with tempfile.TemporaryDirectory() as tmp:
+            c.transfer_dir = tmp
             source = Path(tmp) / 'source'
             source.write_text('keep')
             with self.assertRaisesRegex(RuntimeError, 'Disconnected'):

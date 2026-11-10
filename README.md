@@ -133,6 +133,8 @@ Create `$HERMES_HOME/teleoperator.json`:
 
 ```json
 {
+  "transfer_dir": "/home/gateway/hermes-teleoperator-transfer",
+  "allow_local_delete": false,
   "machines": {
     "workstation": {
       "host": "me@workstation",
@@ -150,6 +152,8 @@ Create `$HERMES_HOME/teleoperator.json`:
 ```
 
 Optional fields: `port`, `known_hosts`. Use absolute paths. `local` is reserved. Keys stay in SSH files or its agent, not this JSON. Settings are read lazily; reload/restart after changes.
+
+Gateway-local transfers are disabled until `transfer_dir` is set to an existing absolute directory. Every gateway-side source and destination path is resolved (including symlinks) and must stay inside that directory; paths inside `$HERMES_HOME` and `~/.ssh` are always refused. `allow_local_delete` defaults to `false`: moving a file *from* the gateway host is refused unless it is set to `true`. Remote receiver endpoints keep their existing behaviour and limits.
 
 ## Skills and MCP on the receiver
 
@@ -197,7 +201,7 @@ The model-facing gateway supports:
 - Optional `machine` addresses a configured remote without changing selection.
 - `action=transfer` with explicit `source_machine`, `source`, `destination_machine`, `destination`, `move=false`.
 
-Transfers support regular files up to 8 MiB, SHA256 verification, no destination overwrite, and copy-before-delete moves. Stop concurrent writers before moving. Use scp/sftp/rsync for large files or directory trees. Transfers do not preserve metadata and are not atomic across two hosts.
+Transfers support regular files up to 8 MiB, SHA256 verification, no destination overwrite, and copy-before-delete moves. When an endpoint is the gateway host, its path must be absolute and resolve under the configured `transfer_dir`, and `$HERMES_HOME`/`~/.ssh` are always refused; moving a gateway-local source additionally requires `allow_local_delete: true`. Stop concurrent writers before moving. Use scp/sftp/rsync for large files or directory trees. Transfers do not preserve metadata and are not atomic across two hosts.
 
 ## Recovery
 

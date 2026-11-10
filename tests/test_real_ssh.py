@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from hermes_teleoperator.controller import Controller
 from hermes_teleoperator.transport import TransportError
@@ -115,7 +116,16 @@ for line in sys.stdin:
                     targets[name] = {'host': 'root@127.0.0.1', 'port': port,
                         'executable': str(wrapper), 'teleoperator_home': str(receiver_home),
                         'identity_file': str(root / 'clientkey'), 'known_hosts': str(known), 'timeout': 30}
-                with Controller(targets) as c:
+                transfer_dir = root / 'transfer'
+                transfer_dir.mkdir()
+                # The SSH fixture may live under HERMES_HOME when TMPDIR does;
+                # keep its transfer paths outside the protected roots.
+                for target, value in (('_hermes_home', root / 'fake-hermes-home'),
+                                      ('_gateway_home', root / 'fake-gateway-home')):
+                    patcher = patch(f'hermes_teleoperator.files.{target}', return_value=value)
+                    patcher.start()
+                    self.addCleanup(patcher.stop)
+                with Controller(targets, transfer_dir=transfer_dir, allow_local_delete=True) as c:
                     def local(_):
                         self.fail('Remote work leaked to local')
 
@@ -159,7 +169,7 @@ for line in sys.stdin:
                     self.assertEqual(result['output'], 'beta-kept:' + str(root / 'beta/work'))
                     c.switch('conversation', 'alpha')
                     with self.subTest(feature='binary transfer no-overwrite and verified move'):
-                        source = root / 'local.bin'
+                        source = transfer_dir / 'local.bin'
                         payload = b'\x00secure-transfer\xff'
                         source.write_bytes(payload)
                         destination = root / 'alpha/arrived.bin'
@@ -176,7 +186,7 @@ for line in sys.stdin:
                         self.assertEqual(destination.read_bytes(), payload)
                         self.assertFalse(source.exists())
                         # Reverse move also exercises target-side checksum-guarded removal.
-                        returned = root / 'returned.bin'
+                        returned = transfer_dir / 'returned.bin'
                         c.transfer('conversation', 'alpha', str(destination), 'local', str(returned), move=True)
                         self.assertFalse(destination.exists())
                         self.assertEqual(returned.read_bytes(), payload)

@@ -1,4 +1,6 @@
 {
+  "transfer_dir": "/home/me/hermes-teleoperator-transfer",
+  "allow_local_delete": false,
   "machines": {
     "workstation": {
       "host": "workstation",

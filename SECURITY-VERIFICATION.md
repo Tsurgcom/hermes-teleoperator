@@ -2,6 +2,7 @@
 
 ## Changes
 
+- Gateway-local file transfers now require a configured `transfer_dir`; every resolved source/destination must stay inside it, `$HERMES_HOME` and `~/.ssh` are refused (including through symlinks), and deleting a gateway-local source with `move=true` requires `allow_local_delete: true`. Remote receiver endpoints and limits are unchanged.
 - Both installers now leave SSH authorization state entirely untouched. Supplying a dedicated public key generates a restricted forced-command entry for explicit administrator review and installation; it does not authorize the key.
 - Installer regressions verify absent/populated SSH directories, nested entries, symlinks, FIFO files, metadata preservation, invalid keys and unsafe forced-command paths.
 - The unprivileged sudo-rejection test uses subprocess user/group settings rather than privilege-changing callbacks, and verifies the child UID.
