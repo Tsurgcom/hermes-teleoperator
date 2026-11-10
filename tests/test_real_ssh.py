@@ -16,6 +16,7 @@ import time
 import unittest
 from unittest.mock import patch
 
+from hermes_teleoperator import guards
 from hermes_teleoperator.controller import Controller
 from hermes_teleoperator.transport import TransportError
 
@@ -125,7 +126,8 @@ for line in sys.stdin:
                     patcher = patch(f'hermes_teleoperator.files.{target}', return_value=value)
                     patcher.start()
                     self.addCleanup(patcher.stop)
-                with Controller(targets, transfer_dir=transfer_dir, allow_local_delete=True) as c:
+                with Controller(targets, transfer_dir=transfer_dir, allow_local_delete=True,
+                                guard=lambda name, args, *, machine: guards.Decision(True, source='test')) as c:
                     def local(_):
                         self.fail('Remote work leaked to local')
 
