@@ -48,7 +48,7 @@ The static musl binary is the default recommendation. `install.sh` currently aut
 
 Test coverage per target is not uniform, and the release notes say so. The full gateway protocol, file transfer, skills, real-SSH and clean-chroot suites run on `x86_64-unknown-linux-musl`. `aarch64-unknown-linux-musl` runs 8 receiver tests under `qemu-aarch64-static` (its clean-chroot test is excluded because the host QEMU wrapper is deliberately absent from that jail). Every other Linux target is cross-compiled and only checked for linkage (`PT_INTERP` present/absent and the glibc floor); macOS binaries are built on a macOS runner but not executed in CI. Emulated timings are not representative.
 
-Version 1.1 replaces the old Python/Hermes receiver. Old `python`/`hermes_home` machine settings are rejected with a migration error, never silently used. The marketplace submission is on hold until the standalone version is validated and pinned.
+Version 1.1 replaces the old Python/Hermes receiver. Old `python`/`hermes_home` machine settings are rejected with a migration error, never silently used.
 
 ## Gateway installation
 
@@ -222,6 +222,7 @@ Uninstall after disconnecting: remove only the enrolled key line, the launcher, 
 - The prompt, memory, initial skill index and AGENTS.md are not migrated. Load remote instructions explicitly.
 - Model execution, browser/desktop, cron, delegation, connectors and local memory stay on the gateway. Unsupported tool names are blocked while remote; switch local to use them. Web search/extract and clarification remain local.
 - This is SSH-user authority, not a sandbox. The receiver does not inherit Hermes' native approval/security guards. Remote terminal execution can access everything the SSH user can. Only explicitly exposed MCPs run, but their code is trusted with the same authority.
+- Hermes runs its approval gates on a remote call before it leaves the gateway, for both routed native tools and `teleoperator(action="call")`: `terminal` through the dangerous-command gate, and file writes, patches, skill edits, state-changing process actions and `mcp__*` calls through the human-approval gate; read-only tools keep local parity (no prompt), except credential files, which are refused. A refused or unreachable gate fails closed. Remote calls still do not get Hermes' full guard path: other plugins' `pre_tool_call` blocks and the agent's tool guardrails run inside the dispatch callback that this plugin's execution middleware replaces, so they never see a remote call and cannot block it. Tracked in [hermes-agent#152963](https://github.com/NousResearch/hermes-agent/issues/152963).
 - Skill text/file semantics, regex search and plain-text patching are not full Hermes feature parity. Document extraction, fuzzy patches, PTY/interactive terminal sessions and HTTP MCP are outside this receiver's initial scope. Use direct SSH/appropriate tooling for those tasks.
 - EOF cleans receiver-owned subprocesses. State is preserved only while the channel lives; no daemon, agent or model process remains intentionally resident.
 
