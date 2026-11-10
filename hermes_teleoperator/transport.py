@@ -1,5 +1,6 @@
 """One encrypted SSH stdio channel per machine and conversation."""
 import json
+import os
 import queue
 import shlex
 import subprocess
@@ -8,9 +9,34 @@ import uuid
 
 MAX_FRAME = 16 * 1024 * 1024
 
+# The only variables an SSH client may inherit. SendEnv and ProxyCommand read
+# the user's ssh config, so an inherited gateway environment could carry
+# provider credentials off-host. Locale variables are added separately (LC_*).
+SSH_ENV_KEYS = ('PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'SSH_AUTH_SOCK', 'TERM')
+
 
 class TransportError(RuntimeError):
     pass
+
+
+def ssh_environment(source=None):
+    """Return the explicit minimal environment for an SSH subprocess.
+
+    Only allowlisted variables that are actually set are returned. HOME, USER
+    and LOGNAME preserve the gateway user's SSH identity and configuration
+    lookup, SSH_AUTH_SOCK supports agent authentication (ForwardAgent=no keeps
+    the agent local), and PATH lets ssh run configured helpers. LANG and LC_*
+    are locale hints; TERM is optional.
+    """
+    environ = os.environ if source is None else source
+    env = {key: environ[key] for key in SSH_ENV_KEYS if key in environ}
+    env.update((key, environ[key]) for key in environ
+               if key.startswith('LC_') and key not in env)
+    return env
+
+
+def _is_ssh(argv):
+    return bool(argv) and os.path.basename(os.fspath(argv[0])) == 'ssh'
 
 
 def ssh_argv(target):
@@ -52,6 +78,10 @@ class RpcProcess:
         self._frames = queue.Queue()
         self._stderr = bytearray()
         self.closed = False
+        # A caller that forgets env must never hand the gateway environment to
+        # ssh: credentials would travel via SendEnv or a ProxyCommand helper.
+        if env is None and _is_ssh(argv):
+            env = ssh_environment()
         self.process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                         stderr=subprocess.PIPE, env=env, cwd=cwd)
         threading.Thread(target=self._read, daemon=True).start()

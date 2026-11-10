@@ -224,6 +224,7 @@ Uninstall after disconnecting: remove only the enrolled key line, the launcher, 
 - This is SSH-user authority, not a sandbox. The receiver does not inherit Hermes' native approval/security guards. Remote terminal execution can access everything the SSH user can. Only explicitly exposed MCPs run, but their code is trusted with the same authority.
 - Skill text/file semantics, regex search and plain-text patching are not full Hermes feature parity. Document extraction, fuzzy patches, PTY/interactive terminal sessions and HTTP MCP are outside this receiver's initial scope. Use direct SSH/appropriate tooling for those tasks.
 - EOF cleans receiver-owned subprocesses. State is preserved only while the channel lives; no daemon, agent or model process remains intentionally resident.
+- Every `ssh` subprocess receives an explicit minimal environment: `PATH`, `HOME`, `USER`, `LOGNAME`, `LANG`/`LC_*`, `SSH_AUTH_SOCK`, and `TERM` only when set. Gateway credentials are never inherited, so a `SendEnv` or `ProxyCommand` in the user's SSH configuration cannot carry them off-host.
 
 ## Build and verify
 

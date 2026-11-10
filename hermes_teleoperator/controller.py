@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 import json
 import threading
 
-from .transport import RpcProcess, ssh_argv
+from .transport import RpcProcess, ssh_argv, ssh_environment
 from .version import VERSION
 
 NATIVE_TOOLS = {
@@ -26,7 +26,9 @@ class Session:
 class Controller:
     def __init__(self, targets, factory=None):
         self.targets = targets
-        self.factory = factory or (lambda target: RpcProcess(ssh_argv(target), timeout=target.get('timeout', 120)))
+        self.factory = factory or (
+            lambda target: RpcProcess(ssh_argv(target), timeout=target.get('timeout', 120),
+                                      env=ssh_environment()))
         self.sessions = {}
         self.lock = threading.RLock()
 

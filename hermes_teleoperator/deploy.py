@@ -12,7 +12,7 @@ import tempfile
 import time
 import urllib.request
 
-from .transport import RpcProcess, ssh_argv
+from .transport import RpcProcess, ssh_argv, ssh_environment
 from .version import VERSION
 
 
@@ -206,7 +206,7 @@ def shell_argv(target, script):
 def _run(target, script, *, data=None, timeout=30):
     try:
         result = subprocess.run(shell_argv(target, script), input=data,
-                                capture_output=True, timeout=timeout)
+                                capture_output=True, timeout=timeout, env=ssh_environment())
     except subprocess.TimeoutExpired as exc:
         raise DeployError('SSH timed out; outcome may be unknown. No mutation retry; inspect target.') from exc
     if result.returncode:
@@ -261,7 +261,8 @@ def _ping(target, executable, probe, config_home):
     clean = {k: v for k, v in target.items()
              if k in ('host', 'port', 'identity_file', 'known_hosts')}
     with RpcProcess(ssh_argv({**clean, 'executable': executable,
-                              'teleoperator_home': config_home}), timeout=20) as rpc:
+                              'teleoperator_home': config_home}), timeout=20,
+                    env=ssh_environment()) as rpc:
         ping = rpc.call('ping')
     validate_ping(ping, probe, config_home)
     return ping

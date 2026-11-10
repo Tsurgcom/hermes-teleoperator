@@ -1,6 +1,30 @@
+import io
+import os
 import sys
 import unittest
-from hermes_teleoperator.transport import RpcProcess, ssh_argv, TransportError
+from unittest.mock import patch
+from hermes_teleoperator.transport import RpcProcess, ssh_argv, ssh_environment, TransportError
+
+
+class SpyProcess:
+    """Records Popen arguments and behaves like an exited child with empty pipes."""
+
+    def __init__(self, calls, argv, **kwargs):
+        calls.append((argv, kwargs))
+        self.stdin = io.BytesIO()
+        self.stdout = io.BytesIO()
+        self.stderr = io.BytesIO()
+        self.returncode = None
+
+    def wait(self, timeout=None):
+        self.returncode = 0
+        return 0
+
+    def terminate(self):
+        self.returncode = 0
+
+    def kill(self):
+        self.returncode = -9
 
 
 class TransportTests(unittest.TestCase):
@@ -66,3 +90,41 @@ sys.stdin.read()
             with self.assertRaisesRegex(TransportError, 'Connection failed; outcome may be unknown'):
                 peer.call('ping')
             self.assertTrue(peer.closed)
+
+
+POLLUTED_ENV = {
+    'PATH': '/usr/local/bin:/usr/bin', 'HOME': '/home/alice', 'USER': 'alice',
+    'LOGNAME': 'alice', 'LANG': 'en_GB.UTF-8', 'LC_ALL': 'C.UTF-8',
+    'LC_MESSAGES': 'C', 'SSH_AUTH_SOCK': '/run/user/1000/ssh-agent.sock',
+    'TERM': 'xterm-256color', 'OPENAI_API_KEY': 'gateway-placeholder',
+    'ANTHROPIC_API_KEY': 'anthropic-placeholder',
+    'AWS_SECRET_ACCESS_KEY': 'aws-gateway-secret', 'HERMES_HOME': '/gateway/private',
+    'SSH_ASKPASS': '/gateway/askpass', 'TERM_PROGRAM': 'WezTerm',
+}
+ALLOWED_ENV = {key: POLLUTED_ENV[key] for key in (
+    'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_MESSAGES',
+    'SSH_AUTH_SOCK', 'TERM')}
+
+
+class SshEnvironmentTests(unittest.TestCase):
+    def test_rpc_ssh_spawns_with_exactly_the_allowlisted_environment(self):
+        calls = []
+        target = {'host': 'workstation-alias', 'identity_file': '/keys/teleoperator',
+                  'known_hosts': '/keys/known_hosts'}
+        with patch.dict(os.environ, POLLUTED_ENV, clear=True), \
+                patch('hermes_teleoperator.transport.subprocess.Popen',
+                      side_effect=lambda argv, **kwargs: SpyProcess(calls, argv, **kwargs)):
+            RpcProcess(ssh_argv(target)).close()
+        self.assertEqual(len(calls), 1)
+        argv, options = calls[0]
+        self.assertEqual(options['env'], ALLOWED_ENV)
+        # The allowlist must not disturb identity, known_hosts or config alias handling.
+        self.assertEqual(argv[argv.index('-i') + 1], '/keys/teleoperator')
+        self.assertIn('UserKnownHostsFile=/keys/known_hosts', argv)
+        self.assertEqual(argv[-2], 'workstation-alias')
+
+    def test_ssh_environment_omits_variables_the_gateway_did_not_set(self):
+        env = ssh_environment({'PATH': '/usr/bin', 'HOME': '/home/alice',
+                               'LC_CTYPE': 'C.UTF-8', 'GITHUB_TOKEN': 'secret'})
+        self.assertEqual(env, {'PATH': '/usr/bin', 'HOME': '/home/alice',
+                               'LC_CTYPE': 'C.UTF-8'})
