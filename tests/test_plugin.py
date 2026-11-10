@@ -58,3 +58,45 @@ class PluginTests(unittest.TestCase):
         result = ctx.middleware['tool_execution'](tool_name='terminal', args={},
                    next_call=lambda _: self.fail('fallback'), session_id=[])
         self.assertIn('error', json.loads(result))
+
+    def test_explicit_call_uses_the_gated_path(self):
+        """``action=call`` must not reach the transport directly: it goes through
+        Controller.run_explicit, which asks Hermes' approval gate first."""
+        import os
+        from unittest.mock import patch
+        from hermes_teleoperator import plugin as plugin_mod
+
+        calls = []
+
+        class StubController:
+            def __init__(self, targets):
+                calls.append(('init', dict(targets)))
+            def run_explicit(self, key, name, args, machine=None):
+                calls.append(('run_explicit', key, name, args, machine))
+                return {'content': 'ok', 'teleoperator': {'machine': 'alpha'}}
+            def close(self):
+                pass
+
+        with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as fh:
+            fh.write(json.dumps({'machines': {'alpha': {'host': 'alpha'}}}))
+            config_file = Path(fh.name)
+        self.addCleanup(os.unlink, config_file)
+        ctx = Context()
+        with patch.object(plugin_mod, 'Controller', StubController), \
+             patch.object(plugin_mod, 'config_path', lambda: config_file):
+            register(ctx)
+            self.addCleanup(ctx.cleanup)
+            result = json.loads(ctx.tools['teleoperator']['handler'](
+                {'action': 'call', 'name': 'mcp__gitea__list_repos', 'arguments': {'q': 1}},
+                session_id='chat-1'))
+        self.assertEqual(calls[0], ('init', {'alpha': {'host': 'alpha'}}))
+        self.assertEqual(calls[1], ('run_explicit', 'chat-1', 'mcp__gitea__list_repos', {'q': 1}, None))
+        self.assertEqual(result['content'], 'ok')
+
+    def test_remote_paths_require_identity(self):
+        ctx = Context()
+        register(ctx)
+        self.addCleanup(ctx.cleanup)
+        result = json.loads(ctx.tools['teleoperator']['handler']({'action': 'call', 'name': 'mcp__x__y'},))
+        self.assertIn('error', result)
+        self.assertFalse(result['teleoperator']['fallback'])

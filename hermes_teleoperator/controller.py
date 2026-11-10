@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 import json
 import threading
 
+from . import guards
 from .transport import RpcProcess, ssh_argv
 from .version import VERSION
 
@@ -24,9 +25,12 @@ class Session:
 
 
 class Controller:
-    def __init__(self, targets, factory=None):
+    def __init__(self, targets, factory=None, guard=None):
         self.targets = targets
         self.factory = factory or (lambda target: RpcProcess(ssh_argv(target), timeout=target.get('timeout', 120)))
+        # Hermes' approval gate. Injectable for tests; never injectable to "allow
+        # everything" in production code (see guards.decide).
+        self.guard = guard or guards.decide
         self.sessions = {}
         self.lock = threading.RLock()
 
@@ -140,17 +144,58 @@ class Controller:
             return {**result, 'teleoperator': {'machine': name,
                                                'hostname': identity.get('hostname') or name}}
 
+    def _decision(self, name, args, machine):
+        """Hermes' verdict for routing *name* to *machine*; failures deny."""
+        try:
+            return self.guard(name, args, machine=machine)
+        except Exception as exc:  # a guard that raises never becomes consent
+            return guards.Decision(False, f'Hermes approval gate failed ({exc}); '
+                                          'refusing remote execution', 'failed-closed')
+
+    def _blocked(self, machine, decision):
+        return {'error': decision.message or 'Blocked by Hermes approval',
+                'status': 'blocked',
+                'teleoperator': {'machine': machine, 'fallback': False,
+                                 'guard': decision.source or 'hermes'}}
+
     def route(self, key, name, args, next_call):
         state = self._session(key)
         with state.lock:
             if state.active == 'local' or name in LOCAL_TOOLS:
                 return next_call(args)
-            try:
-                if name not in NATIVE_TOOLS and not name.startswith('mcp__'):
-                    raise ValueError(f'{name} is not routed. Use teleoperator search/describe/call for remote tools, or switch local.')
-                return self.call(key, 'tool', {'name': name, 'arguments': args})
-            except Exception as exc:
-                return {'error': str(exc), 'teleoperator': {'machine': state.active, 'fallback': False}}
+            machine = state.active
+        try:
+            if name not in NATIVE_TOOLS and not name.startswith('mcp__'):
+                raise ValueError(f'{name} is not routed. Use teleoperator search/describe/call for remote tools, or switch local.')
+            # A routed call is only allowed to leave the gateway after Hermes'
+            # own approval gate approved it. Denial (or an unreachable gate)
+            # returns a blocked result: it never executes remotely and never
+            # falls back to local.
+            decision = self._decision(name, args, machine)
+            if not decision.allowed:
+                return self._blocked(machine, decision)
+            return self.call(key, 'tool', {'name': name, 'arguments': args})
+        except Exception as exc:
+            return {'error': str(exc), 'teleoperator': {'machine': machine, 'fallback': False}}
+
+    def run_explicit(self, key, name, args, machine=None):
+        """Execute a tool the model asked for by name (``teleoperator call``).
+
+        Same rules as the routed path: gated by Hermes, remote only, no local
+        fallback. Unlike ``route`` this is never a native-tool interception, so
+        an MCP tool reaches the receiver only through this explicit call.
+        """
+        state = self._session(key)
+        with state.lock:
+            target = machine or state.active
+            if target == 'local':
+                raise ValueError('This action needs a remote machine; native tools already work locally')
+            if name not in NATIVE_TOOLS and not name.startswith('mcp__'):
+                raise ValueError(f'Tool not exposed: {name}')
+        decision = self._decision(name, args, target)
+        if not decision.allowed:
+            return self._blocked(target, decision)
+        return self.call(key, 'tool', {'name': name, 'arguments': args}, target)
 
     def transfer(self, key, source_machine, source, destination_machine, destination, move=False):
         from .files import file_operation

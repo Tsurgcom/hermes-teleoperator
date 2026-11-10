@@ -1,6 +1,13 @@
 import unittest
 from hermes_teleoperator.version import VERSION
+from hermes_teleoperator import guards
 from hermes_teleoperator.controller import Controller
+
+
+def allow(name, args, *, machine):
+    """Stand-in for a positive Hermes verdict: these tests cover transport, and
+    the approval contract itself is covered in tests/test_guards.py."""
+    return guards.Decision(True, source='test-allow')
 
 
 class Peer:
@@ -24,7 +31,8 @@ class ControllerTests(unittest.TestCase):
             peer = Peer(target['host'])
             self.peers.append(peer)
             return peer
-        self.controller = Controller({'alpha': {'host': 'alpha'}, 'beta': {'host': 'beta'}}, factory)
+        self.controller = Controller({'alpha': {'host': 'alpha'}, 'beta': {'host': 'beta'}}, factory,
+                                     guard=allow)
         self.addCleanup(self.controller.close)
 
     def test_switch_back_reuses_connection_and_is_session_scoped(self):
@@ -149,3 +157,38 @@ class ControllerTests(unittest.TestCase):
     def test_no_shared_implicit_session(self):
         with self.assertRaises(ValueError):
             self.controller.switch('', 'alpha')
+
+    def test_default_guard_refuses_remote_work_when_the_gate_is_unreachable(self):
+        """The shipped controller must never execute remotely without a verdict
+        from Hermes' gate: when the gate cannot be reached, the call is refused."""
+        from unittest.mock import patch
+        import sys
+        c = Controller({'alpha': {'host': 'alpha'}}, lambda _: Peer('alpha'))
+        self.addCleanup(c.close)
+        c.switch('s', 'alpha')
+        local = []
+        with patch.dict(sys.modules, {'tools': None, 'tools.approval': None}):
+            result = c.route('s', 'terminal', {'command': 'echo hi'},
+                             lambda args: local.append(args) or 'LOCAL')
+        self.assertEqual(result['status'], 'blocked')
+        self.assertFalse(result['teleoperator']['fallback'])
+        self.assertEqual(local, [])
+
+    def test_local_conversation_never_asks_the_guard(self):
+        def guard(name, args, *, machine):
+            self.fail('the approval gate must not be consulted while local')
+        c = Controller({'alpha': {'host': 'alpha'}}, self.controller.factory, guard=guard)
+        self.addCleanup(c.close)
+        self.assertEqual(c.route('s', 'terminal', {'command': 'rm -rf /'}, lambda args: 'LOCAL'), 'LOCAL')
+
+    def test_denial_keeps_the_connection_untouched(self):
+        def deny(name, args, *, machine):
+            return guards.Decision(False, 'BLOCKED: denied by test', 'test-deny')
+        c = Controller({'alpha': {'host': 'alpha'}}, self.controller.factory, guard=deny)
+        self.addCleanup(c.close)
+        c.switch('s', 'alpha')
+        remote = self.peers[-1]
+        result = c.route('s', 'write_file', {'path': '/tmp/x', 'content': 'y'}, lambda args: 'LOCAL')
+        self.assertEqual(result['status'], 'blocked')
+        self.assertEqual([call for call in remote.calls if call[0] == 'tool'], [])
+        self.assertEqual(c.status('s')['active'], 'alpha')

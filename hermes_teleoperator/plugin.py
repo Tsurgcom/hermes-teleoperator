@@ -11,7 +11,8 @@ from .configuration import add_machine
 DESCRIPTION = ('Switch this conversation between local and configured SSH machines. Native terminal, '
                'file and skill tools follow the selected machine. Use search/describe/call for its MCPs. '
                'status shows location; back toggles; transfer copies or moves a file between named machines. '
-               'Never assume remote failure means local execution.')
+               'Hermes approves every remote call first (dangerous-command gate for terminal, the human '
+               'approval gate for writes, skill edits and MCP). Never assume remote failure means local execution.')
 SCHEMA = {'name': 'teleoperator', 'description': DESCRIPTION, 'parameters': {
     'type': 'object', 'properties': {
         'action': {'type': 'string', 'enum': ['status', 'switch', 'back', 'reconnect', 'disconnect',
@@ -89,7 +90,7 @@ def register(ctx):
             elif action in {'search', 'describe'}:
                 result = c.call(key, action, {k: args[k] for k in ('query', 'name') if k in args}, args.get('machine'))
             elif action == 'call':
-                result = c.call(key, 'tool', {'name': args['name'], 'arguments': args.get('arguments', {})}, args.get('machine'))
+                result = c.run_explicit(key, args['name'], args.get('arguments', {}), args.get('machine'))
             elif action == 'transfer':
                 result = c.transfer(key, args['source_machine'], args['source'], args['destination_machine'],
                                     args['destination'], args.get('move', False))
@@ -111,6 +112,7 @@ def register(ctx):
             state = controller().status(identity(kwargs))
             return {'context': 'Teleoperator location: ' + json.dumps(state) +
                     '\nUse teleoperator status after uncertainty. Remote native tools use that host, not the launch host. '
+                    'Every remote call is approved by Hermes first; a blocked or unavailable approval refuses it. '
                     'Discover remote MCPs with teleoperator search/describe/call. Do not use execute_code remotely. '
                     'Web search/extract and human clarification remain local. Local memory is not migrated.'}
         except Exception:
