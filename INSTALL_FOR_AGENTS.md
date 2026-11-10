@@ -28,14 +28,14 @@ Read the repository README and the installed Hermes CLI's help. Load the `hermes
 For the corrected **v1.1.2 gateway/installer source** (safe install scan and source-pinned receiver digests), the immutable commit is:
 
 ```text
-9e64ed28a9dc741644f1a2204438b93e321c939a
+1f8c165ede916d0fb5d69eebd712779612982f6f
 ```
 
 Run on the **gateway**, with the intended profile selected (use `hermes -p <profile> ...` when appropriate):
 
 ```sh
 hermes plugins install Tsurgcom/hermes-teleoperator \
-  --ref 9e64ed28a9dc741644f1a2204438b93e321c939a --enable
+  --ref 1f8c165ede916d0fb5d69eebd712779612982f6f --enable
 hermes plugins list
 ```
 
