@@ -232,7 +232,10 @@ class TransferGuardTests(unittest.TestCase):
         controller = Controller({'beta': {'host': 'beta'}}, factory)
         self.addCleanup(controller.close)
         controller.switch('s', 'beta')
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch('hermes_teleoperator.files._hermes_home', return_value=Path('/nonexistent-test-hermes')), \
+                patch('hermes_teleoperator.files._gateway_home', return_value=Path('/nonexistent-test-home')):
+            controller.transfer_dir = tmp
             source, dest = Path(tmp) / 'in', Path(tmp) / 'out'
             source.write_bytes(b'payload')
             result = controller.transfer('s', 'local', str(source), 'beta', str(dest))
