@@ -22,4 +22,4 @@ Gateway/receiver protocol and version remain 1.1.2. The receiver source and exis
 
 A development tree containing ignored Rust build output can still trigger binary-file warnings: validate a fresh clone or `git archive` tree, exactly as catalog admission does. Never ship build output in the plugin repository.
 
-Linux real execution was tested; no new macOS hardware verification is claimed. The receiver still has the SSH user's OS authority and no native Hermes approval guards. The marketplace is human-reviewed; passing validation is not admission or maintainer approval.
+Linux real execution was tested; no new macOS hardware verification is claimed. The receiver still has the SSH user's OS authority. Gateway-side, every routed call now passes Hermes' dangerous-command gate (`terminal`) or human-approval gate (writes, skill edits, state-changing process actions, `mcp__*`) and fails closed when the gate is refused or unreachable; other plugins' `pre_tool_call` hooks and the agent's tool guardrails remain out of reach of execution middleware (hermes-agent#152963). The marketplace is human-reviewed; passing validation is not admission or maintainer approval.
