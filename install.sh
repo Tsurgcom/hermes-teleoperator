@@ -3,6 +3,7 @@
 set -euo pipefail
 fail() { printf 'Installation failed: %s\n' "$*" >&2; exit 1; }
 version='v1.1.2'
+pinned_version=$version
 binary=''
 digest=''
 public_key=''
@@ -19,7 +20,7 @@ while (($#)); do
         --public-key-file) public_key_file=${2:?}; shift 2 ;;
         --teleoperator-home) config_home=${2:?}; shift 2 ;;
         --allow-root) allow_root=true; shift ;;
-        --help) printf '%s\n' 'Usage: bash install.sh [--version v1.1.2] [--public-key "ssh-ed25519 ..."] [--teleoperator-home /absolute/path] [--allow-root]' 'Offline: --binary /path/to/receiver --sha256 <trusted SHA256>'; exit ;;
+        --help) printf '%s\n' 'Usage: bash install.sh [--version v1.1.2] [--public-key "ssh-ed25519 ..."] [--teleoperator-home /absolute/path] [--allow-root]' 'Release downloads are verified against SHA256 digests embedded in this script for the exact tag; SHA256SUMS is only cross-checked.' 'Offline: --binary /path/to/receiver --sha256 <trusted SHA256>'; exit ;;
         *) fail "Unknown option: $1 (legacy --python/--hermes-home are no longer supported)" ;;
     esac
 done
@@ -69,22 +70,57 @@ trap 'rm -rf -- "$staging"; [[ -z $launcher_tmp ]] || rm -f -- "$launcher_tmp"' 
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
+# BEGIN PINNED RECEIVER DIGESTS
+# Generated from hermes_teleoperator/version.py by scripts/sync_receiver_digests.py.
+# Do not edit by hand. These digests are the trust root for release downloads;
+# SHA256SUMS is fetched only to detect a rewritten release.
+pinned_digest() {
+    case $1 in
+        hermes-teleoperator-receiver-aarch64-apple-darwin) printf '%s' '6ebdbc07ca7cc59c59c2cbeb59fc3ab5c0fe37e0f74e7750039b355f20e49ad5' ;;
+        hermes-teleoperator-receiver-aarch64-unknown-linux-gnu) printf '%s' '486cb6589495af5c3ba05584deef6187da41f97e20fdcb6e95aeddd2211747f7' ;;
+        hermes-teleoperator-receiver-aarch64-unknown-linux-musl) printf '%s' '9d1546d1754d75017d40542018167b765407f5ecc7d2b2ecf7071414ace1ec82' ;;
+        hermes-teleoperator-receiver-armv7-unknown-linux-gnueabihf) printf '%s' '2a1d6c1e304a67d73c13a7762aee3b0bdc683a28595b88fcd9873bfaa10054fb' ;;
+        hermes-teleoperator-receiver-armv7-unknown-linux-musleabihf) printf '%s' '130a39607f532e648471e3ae00ec8ca26972431aef71210f3b324065a44047ee' ;;
+        hermes-teleoperator-receiver-i686-unknown-linux-gnu) printf '%s' 'a94134bf3a017dae6a5a58a612d2cf8f4fdb99cf5c298d6c9a3ad5ef1e12dfc8' ;;
+        hermes-teleoperator-receiver-i686-unknown-linux-musl) printf '%s' 'ceb0e0c7154c97a6ad9de879d13f77f40c62eb3e6e845e91815f8de9b12f2100' ;;
+        hermes-teleoperator-receiver-powerpc64le-unknown-linux-gnu) printf '%s' '2d0b155f09954f81a6706b4de80a0f97d97421239927b811f55138bd8d3c21fb' ;;
+        hermes-teleoperator-receiver-riscv64gc-unknown-linux-musl) printf '%s' '540c333c328aa81685fdef0a9d685cd9ee887a07152b92bbd8d41863fc743211' ;;
+        hermes-teleoperator-receiver-s390x-unknown-linux-gnu) printf '%s' '08dfd11de53e096ab088cc28da3b678cccf0cc64f8012040eee6ae398f761cc9' ;;
+        hermes-teleoperator-receiver-x86_64-apple-darwin) printf '%s' 'fcc3542810d5fb2fdfa63b891f67016500901214c79db0536bfba8c93401edc7' ;;
+        hermes-teleoperator-receiver-x86_64-unknown-linux-gnu) printf '%s' 'd1dbad5d26fd86ea91fa79c3f2327073a055737f3a26cadc4dcfa15719f8c359' ;;
+        hermes-teleoperator-receiver-x86_64-unknown-linux-musl) printf '%s' 'd639b8f89309f0c362aefbc26a311d0f305fe5ed9de0cc636e84c1367cc16861' ;;
+        *) return 1 ;;
+    esac
+}
+# END PINNED RECEIVER DIGESTS
 if [[ -z $binary ]]; then
     [[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]] || fail 'Use an exact release version'
+    [[ $version == "$pinned_version" ]] || fail "This installer only authorizes release $pinned_version; refusing $version"
     case $(uname -m) in
         x86_64) arch=x86_64 ;;
         aarch64|arm64) arch=aarch64 ;;
         *) fail 'Unsupported CPU; build from receiver/ source' ;;
     esac
     asset=hermes-teleoperator-receiver-$arch-unknown-linux-musl
+    pinned=$(pinned_digest "$asset") || fail "No SHA256 is pinned in this installer for $asset; refusing a release download"
+    if [[ -n $digest && $digest != "$pinned" ]]; then
+        fail '--sha256 does not match the digest pinned in this installer; use --binary for independently verified bytes'
+    fi
+    digest=$pinned
     url=https://github.com/Tsurgcom/hermes-teleoperator/releases/download/$version
     curl -fsSL --proto '=https' --tlsv1.2 "$url/$asset" -o "$staging/receiver"
     curl -fsSL --proto '=https' --tlsv1.2 "$url/SHA256SUMS" -o "$staging/SHA256SUMS"
-    if [[ -z $digest ]]; then
-        while read -r sum name; do
-            if [[ $name == "$asset" || $name == "*$asset" ]]; then digest=$sum; break; fi
-        done < "$staging/SHA256SUMS"
-    fi
+    # The downloaded manifest is not the trust root: it is only checked so a
+    # release that rewrote both bytes and checksum is reported clearly.
+    manifest_digest=''
+    while read -r sum name; do
+        if [[ $name == "$asset" || $name == "*$asset" ]]; then
+            [[ -z $manifest_digest ]] || fail "Duplicate SHA256SUMS entry for $asset"
+            manifest_digest=$sum
+        fi
+    done < "$staging/SHA256SUMS"
+    [[ $manifest_digest =~ ^[a-f0-9]{64}$ ]] || fail "SHA256SUMS has no valid entry for $asset"
+    [[ $manifest_digest == "$digest" ]] || fail 'SHA256SUMS disagrees with the digest pinned in this installer; refusing a rewritten release'
 else
     [[ $binary == /* ]] || fail '--binary must be an absolute path'
     [[ -n $digest ]] || fail 'Offline binary requires a trusted --sha256'

@@ -318,5 +318,141 @@ class StandaloneInstallTests(unittest.TestCase):
             self.assertIn('writable', result.stderr)
 
 
+FAKE_CURL = r'''#!/bin/bash
+set -eu
+if [[ -n ${FAKE_CURL_MARKER:-} ]]; then printf '%s\n' "$*" >> "$FAKE_CURL_MARKER"; fi
+out=''; url=''
+while (($#)); do
+    case $1 in
+        -o) out=$2; shift 2 ;;
+        --proto) shift 2 ;;
+        --tlsv1.2|-fsSL|-fsS|-fs|-f|-s|-S|-L) shift ;;
+        https://*) url=$1; shift ;;
+        *) shift ;;
+    esac
+done
+[[ -n $out && -n $url ]] || exit 2
+if [[ $url == */SHA256SUMS ]]; then
+    cp -- "${FAKE_MANIFEST:?}" "$out"
+else
+    cp -- "${FAKE_BINARY:?}" "$out"
+fi
+'''
+
+
+class ReleasePinTests(unittest.TestCase):
+    """Release downloads trust the digest embedded in install.sh, not SHA256SUMS."""
+
+    ASSET_X86_64 = 'hermes-teleoperator-receiver-x86_64-unknown-linux-musl'
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.home = self.root / 'home'
+        self.home.mkdir()
+        self.commands = self.root / 'commands'
+        self.commands.mkdir()
+        curl = self.commands / 'curl'
+        curl.write_text(FAKE_CURL)
+        curl.chmod(0o700)
+        self.marker = self.root / 'curl-calls'
+        self.binary = self.root / 'payload'
+        self.manifest = self.root / 'SHA256SUMS'
+        self.addCleanup(self.tmp.cleanup)
+
+    def run_install(self, *extra, script=ROOT / 'install.sh', env=None):
+        base = {**os.environ, 'HOME': str(self.home),
+                'PATH': f'{self.commands}:/usr/bin:/bin',
+                'FAKE_BINARY': str(self.binary), 'FAKE_MANIFEST': str(self.manifest),
+                'FAKE_CURL_MARKER': str(self.marker)}
+        for key in ('SUDO_USER', 'HERMES_HOME', 'PYTHONPATH', 'TELEOPERATOR_HOME'):
+            base.pop(key, None)
+        base.update(env or {})
+        return subprocess.run(['bash', str(script), *extra], env=base,
+                              capture_output=True, text=True, timeout=30)
+
+    def write_payload(self, payload=b'#!/bin/sh\nprintf PINNED_OK\n', manifest_digest=None):
+        self.binary.write_bytes(payload)
+        digest = hashlib.sha256(payload).hexdigest()
+        self.manifest.write_text(
+            f'{manifest_digest or digest}  {self.ASSET_X86_64}\n', encoding='ascii')
+        return digest
+
+    def launcher(self):
+        return self.home / '.local/bin/hermes-teleoperator-receiver'
+
+    def test_release_install_rejects_tampered_binary_even_when_manifest_matches(self):
+        tampered = b'tampered release bytes'
+        self.write_payload(tampered, manifest_digest=hashlib.sha256(tampered).hexdigest())
+        result = self.run_install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('pinned in this installer', result.stderr)
+        self.assertFalse(self.launcher().exists())
+
+    def test_release_install_rejects_binary_that_differs_from_pinned_digest(self):
+        from hermes_teleoperator.version import RECEIVER_SHA256
+        self.write_payload(b'tampered release bytes',
+                           manifest_digest=RECEIVER_SHA256[self.ASSET_X86_64])
+        result = self.run_install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('checksum mismatch', result.stderr.lower())
+        self.assertFalse(self.launcher().exists())
+
+    def test_release_install_refuses_asset_with_no_embedded_pin_before_downloading(self):
+        script = self.root / 'install-no-x86-pin.sh'
+        text = (ROOT / 'install.sh').read_text()
+        text, count = re.subn(
+            r'^\s+hermes-teleoperator-receiver-x86_64-unknown-linux-musl\) printf .*$',
+            '', text, flags=re.M)
+        self.assertEqual(count, 1)
+        script.write_text(text)
+        result = self.run_install(script=script)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('No SHA256 is pinned in this installer', result.stderr)
+        self.assertFalse(self.marker.exists(), 'must fail before any network fetch')
+        self.assertFalse(self.launcher().exists())
+
+    def test_release_install_rejects_sha256_that_disagrees_with_embedded_pin(self):
+        self.write_payload()
+        result = self.run_install('--sha256', '0' * 64)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('does not match the digest pinned in this installer', result.stderr)
+        self.assertFalse(self.marker.exists())
+        self.assertFalse(self.launcher().exists())
+
+    def test_release_install_refuses_a_version_other_than_the_pinned_tag(self):
+        self.write_payload()
+        result = self.run_install('--version', 'v1.0.0')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('only authorizes release', result.stderr)
+        self.assertFalse(self.marker.exists())
+        self.assertFalse(self.launcher().exists())
+
+    def test_release_install_rejects_manifest_without_selected_asset(self):
+        self.binary.write_bytes(b'ignored')
+        self.manifest.write_text('', encoding='ascii')
+        result = self.run_install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('no valid entry', result.stderr)
+        self.assertFalse(self.launcher().exists())
+
+    def test_embedded_pin_drives_install_when_manifest_agrees(self):
+        # The real v1.1.2 bytes are not in this fixture, so substitute the test
+        # binary's digest in a copy. Parity tests keep the real table honest.
+        payload = b'#!/bin/sh\nprintf PINNED_OK\n'
+        digest = self.write_payload(payload)
+        script = self.root / 'install-fixture-pin.sh'
+        text = (ROOT / 'install.sh').read_text()
+        text, count = re.subn(
+            r"(hermes-teleoperator-receiver-x86_64-unknown-linux-musl\) printf '%s' ')[0-9a-f]{64}(')",
+            rf'\g<1>{digest}\g<2>', text)
+        self.assertEqual(count, 1)
+        script.write_text(text)
+        result = self.run_install(script=script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(subprocess.check_output([str(self.launcher())], text=True), 'PINNED_OK')
+        self.assertEqual(self.marker.read_text().count('/SHA256SUMS '), 1)
+
+
 if __name__ == '__main__':
     unittest.main()

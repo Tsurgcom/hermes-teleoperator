@@ -85,7 +85,7 @@ python -m hermes_teleoperator.deploy me@workstation \
   --public-key-file "$HOME/.ssh/teleoperator-workstation.pub"
 ```
 
-The helper probes the destination's actual userland ABI over strict SSH, downloads the exact gateway-matching release and SHA256SUMS onto the gateway, verifies them, then transfers bytes over SSH for offline installation. It never selects `latest`, downloads on the client, or transfers a private key. `--version v1.1.2` is optional and must match the gateway exactly. `--port`, `--known-hosts` and `--teleoperator-home` are supported. Root requires `--allow-root`; sudo-derived identity is rejected. Download checksums are from the same GitHub release, not independent publisher signatures.
+The helper probes the destination's actual userland ABI over strict SSH, downloads the exact gateway-matching release onto the gateway, verifies the asset against a per-asset SHA256 committed in `hermes_teleoperator/version.py` for that release tag, then transfers bytes over SSH for offline installation. It never selects `latest`, downloads on the client, or transfers a private key. `--version v1.1.2` is optional and must match the gateway exactly. `--port`, `--known-hosts` and `--teleoperator-home` are supported. Root requires `--allow-root`; sudo-derived identity is rejected. `SHA256SUMS` is fetched and cross-checked so a rewritten release is reported, but the source pin is the trust root; neither is an independent publisher signature.
 
 Selection prefers static musl on supported Linux targets, falling back to glibc only for s390x and ppc64le with proven version floors. It checks ELF word size/endianness (including 32-bit userland on a 64-bit kernel), ARM hard-float, RISC-V ISA, CPU/kernel minimums, macOS version and Rosetta. Ambiguous or unsupported combinations fail rather than guessing. A staged receiver must pass an exact version/protocol/identity handshake before the live launcher switches atomically. Existing skills, config and unrelated SSH keys are preserved; a failed transfer or staged handshake leaves the live launcher unchanged. Old content-addressed binaries are retained for inspection, not automatically pruned. Disconnect live sessions before upgrading. SSH mutations are never automatically retried; inspect ambiguous failures before rerunning.
 
@@ -110,7 +110,7 @@ curl -fsSL "https://raw.githubusercontent.com/Tsurgcom/hermes-teleoperator/$REF/
 
 The gateway generates a dedicated key with `ssh-keygen -t ed25519 -f "$HOME/.ssh/teleoperator-workstation"`. Its private key stays on the gateway. Only the public key goes into `--public-key` or `--public-key-file`. For inspection, download and read the script before running it. Do not pipe private keys or credentials into it.
 
-The installer selects a Linux static musl binary by architecture and checks its SHA256 against the release's SHA256SUMS. These checksums detect corrupt/different bytes; they are distributed by the same GitHub release and are not an independent publisher signature. Supply a trusted `--sha256` to pin independently verified bytes. The bootstrap script itself is trusted through its reviewed revision and GitHub HTTPS. Signed release verification is not implemented.
+The installer selects a Linux static musl binary by architecture and checks its SHA256 against a digest embedded in `install.sh` for the exact release tag. It also downloads `SHA256SUMS` and refuses to continue if that manifest disagrees with the embedded digest; the manifest is never the trust root. Supplying `--sha256` for a release install must match the embedded pin. Supply `--binary` with a trusted `--sha256` to install independently verified bytes instead. The bootstrap script itself is trusted through its reviewed revision and GitHub HTTPS. A `--sha256` or `SHA256SUMS` match is not a publisher signature; releases additionally carry GitHub build-provenance attestations (see [RELEASING.md](RELEASING.md)).
 
 Offline/local build installation:
 
@@ -230,6 +230,7 @@ Uninstall after disconnecting: remove only the enrolled key line, the launcher, 
 ```sh
 cargo test --locked --manifest-path receiver/Cargo.toml
 cargo build --release --locked --manifest-path receiver/Cargo.toml
+python3 scripts/sync_receiver_digests.py --check
 TELEOPERATOR_RECEIVER="$PWD/receiver/target/release/hermes-teleoperator-receiver" \
   python3 -m unittest discover -s tests -v
 hermes plugins doctor . --ci

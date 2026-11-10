@@ -101,11 +101,61 @@ class DownloadTests(unittest.TestCase):
             destination.write_bytes((digest + '  ' + asset + '\n').encode()
                                     if url.endswith('SHA256SUMS') else payload)
         with tempfile.TemporaryDirectory() as tmp:
-            path, checksum = deploy.download_release(asset, Path(tmp), fetch=fetch)
+            path, checksum = deploy.download_release(asset, Path(tmp), fetch=fetch,
+                                                     pins={asset: digest})
             self.assertEqual(path.read_bytes(), payload)
             self.assertEqual(checksum, digest)
         base = f'https://github.com/Tsurgcom/hermes-teleoperator/releases/download/v{deploy.VERSION}'
         self.assertEqual(seen, [base + '/SHA256SUMS', base + '/' + asset])
+
+    def test_tampered_asset_with_matching_rewritten_manifest_is_rejected(self):
+        """The release owns both the bytes and SHA256SUMS; source owns the pin."""
+        asset = deploy.select_asset(linux())
+        pinned = hashlib.sha256(b'genuine release bytes').hexdigest()
+        tampered = b'tampered release bytes'
+        tampered_digest = hashlib.sha256(tampered).hexdigest()
+        fetches = []
+        def fetch(url, destination, limit):
+            fetches.append(url)
+            destination.write_bytes((tampered_digest + '  ' + asset + '\n').encode()
+                                    if url.endswith('SHA256SUMS') else tampered)
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(deploy.DeployError, 'pinned in source'):
+                deploy.download_release(asset, Path(tmp), fetch=fetch, pins={asset: pinned})
+        self.assertEqual(len(fetches), 2)  # the tampered binary was actually downloaded and checked
+
+    def test_binary_is_checked_against_source_pin_before_manifest_is_trusted(self):
+        asset = deploy.select_asset(linux())
+        pinned = hashlib.sha256(b'genuine release bytes').hexdigest()
+        tampered = b'tampered release bytes'
+        def fetch(url, destination, limit):
+            # The manifest still claims the genuine digest while the CDN serves
+            # different bytes: only the binary check catches this.
+            destination.write_bytes((pinned + '  ' + asset + '\n').encode()
+                                    if url.endswith('SHA256SUMS') else tampered)
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(deploy.DeployError, 'binary does not match'):
+                deploy.download_release(asset, Path(tmp), fetch=fetch, pins={asset: pinned})
+
+    def test_manifest_disagreeing_with_source_pin_is_rejected(self):
+        asset = deploy.select_asset(linux())
+        pinned = hashlib.sha256(b'genuine release bytes').hexdigest()
+        other = hashlib.sha256(b'other release bytes').hexdigest()
+        def fetch(url, destination, limit):
+            destination.write_bytes((other + '  ' + asset + '\n').encode()
+                                    if url.endswith('SHA256SUMS') else b'genuine release bytes')
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(deploy.DeployError, 'disagrees with the SHA256 pinned'):
+                deploy.download_release(asset, Path(tmp), fetch=fetch, pins={asset: pinned})
+
+    def test_missing_or_malformed_pin_fails_closed_before_any_fetch(self):
+        asset = deploy.select_asset(linux())
+        def fetch(url, destination, limit):
+            self.fail(f'must not fetch without a source pin: {url}')
+        for pins, message in [({}, 'No SHA256 pinned'), ({asset: 'not-a-digest'}, 'Malformed SHA256')]:
+            with self.subTest(pins=pins), tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaisesRegex(deploy.DeployError, message):
+                    deploy.download_release(asset, Path(tmp), fetch=fetch, pins=pins)
 
     def test_malformed_duplicate_missing_and_mismatched_checksums_rejected(self):
         asset = deploy.select_asset(linux())
@@ -118,7 +168,8 @@ class DownloadTests(unittest.TestCase):
                 destination.write_bytes(manifest.encode() if url.endswith('SHA256SUMS') else payload)
             with self.subTest(manifest=manifest), tempfile.TemporaryDirectory() as tmp:
                 with self.assertRaises(deploy.DeployError):
-                    deploy.download_release(asset, Path(tmp), fetch=fetch)
+                    deploy.download_release(asset, Path(tmp), fetch=fetch,
+                                            pins={asset: digest})
 
     def test_requested_version_cannot_diverge(self):
         for version in ['latest', 'v1.0.0', '1.1.2', 'v' + deploy.VERSION + '/x']:
@@ -508,7 +559,8 @@ class OfflineExecutionTests(unittest.TestCase):
                                         if url.endswith('SHA256SUMS') else payload)
             with patch.object(deploy, '_run', side_effect=local_run), \
                  patch.object(deploy, '_ping', side_effect=local_ping), \
-                 patch.object(deploy, '_fetch', side_effect=fetch):
+                 patch.object(deploy, '_fetch', side_effect=fetch), \
+                 patch.object(deploy, 'RECEIVER_SHA256', {asset: digest}):
                 result = deploy.deploy({'host': 'unused'}, allow_root=True)
                 self.assertEqual(result['handshake']['version'], deploy.VERSION)
                 launcher = Path(result['executable'])
@@ -597,7 +649,10 @@ X11Forwarding no
                         return public_fetch(url, destination, limit)
                     destination.write_bytes((digest + '  ' + asset + '\n').encode()
                                             if url.endswith('SHA256SUMS') else payload)
-                with patch.object(deploy, '_fetch', side_effect=fetch):
+                public_release = os.environ.get('TELEOPERATOR_DEPLOY_PUBLIC_RELEASE') == deploy.VERSION
+                pins = {} if public_release else {asset: digest}
+                with patch.object(deploy, '_fetch', side_effect=fetch), \
+                     patch.object(deploy, 'RECEIVER_SHA256', pins):
                     result = deploy.deploy(target, allow_root=True,
                                            public_key=(d / 'dedicated.pub').read_text())
                     self.assertEqual(result['handshake']['version'], deploy.VERSION)
