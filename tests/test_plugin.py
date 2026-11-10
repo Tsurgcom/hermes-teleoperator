@@ -58,3 +58,84 @@ class PluginTests(unittest.TestCase):
         result = ctx.middleware['tool_execution'](tool_name='terminal', args={},
                    next_call=lambda _: self.fail('fallback'), session_id=[])
         self.assertIn('error', json.loads(result))
+
+    def test_settings_validation(self):
+        from hermes_teleoperator.configuration import load_settings
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'teleoperator.json'
+            self.assertEqual(load_settings(path), {'machines': {}})
+            for value in ('relative/path', '', 5, None):
+                with self.subTest(transfer_dir=value):
+                    path.write_text(json.dumps({'transfer_dir': value}))
+                    with self.assertRaisesRegex(ValueError, 'transfer_dir'):
+                        load_settings(path)
+            path.write_text(json.dumps({'allow_local_delete': 'yes'}))
+            with self.assertRaisesRegex(ValueError, 'allow_local_delete'):
+                load_settings(path)
+            path.write_text(json.dumps({'machines': []}))
+            with self.assertRaisesRegex(ValueError, 'machines'):
+                load_settings(path)
+            path.write_text(json.dumps({'machines': {}, 'transfer_dir': '/tmp/transfer',
+                                        'allow_local_delete': True}))
+            settings = load_settings(path)
+            self.assertEqual(settings['transfer_dir'], '/tmp/transfer')
+            self.assertTrue(settings['allow_local_delete'])
+
+    def test_transfer_config_is_wired_and_moves_are_gated(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            transfer = base / 'transfer'
+            transfer.mkdir()
+            config = base / 'teleoperator.json'
+            config.write_text(json.dumps({'machines': {}, 'transfer_dir': str(transfer)}))
+            with patch('hermes_teleoperator.plugin.config_path', return_value=config), \
+                 patch('hermes_teleoperator.files._hermes_home',
+                       return_value=Path('/nonexistent-test-hermes')), \
+                 patch('hermes_teleoperator.files._gateway_home',
+                       return_value=Path('/nonexistent-test-home')):
+                ctx = Context()
+                register(ctx)
+                self.addCleanup(ctx.cleanup)
+                handler = ctx.tools['teleoperator']['handler']
+                source = transfer / 'source.bin'
+                source.write_bytes(b'gateway payload')
+                destination = transfer / 'destination.bin'
+                args = {'action': 'transfer', 'source_machine': 'local', 'source': str(source),
+                        'destination_machine': 'local', 'destination': str(destination),
+                        'move': True}
+                result = json.loads(handler(args, session_id='s'))
+                self.assertIn('error', result)
+                self.assertIn('allow_local_delete', result['error'])
+                self.assertTrue(source.exists())
+                self.assertFalse(destination.exists())
+                result = json.loads(handler({**args, 'move': False}, session_id='s'))
+                self.assertEqual(result['size'], len(b'gateway payload'))
+                self.assertEqual(destination.read_bytes(), b'gateway payload')
+                outside = base / 'outside.bin'
+                result = json.loads(handler({**args, 'move': False, 'destination': str(outside)},
+                                            session_id='s'))
+                self.assertIn('error', result)
+                self.assertIn('outside', result['error'])
+                self.assertFalse(outside.exists())
+            config.write_text(json.dumps({'machines': {}, 'transfer_dir': str(transfer),
+                                          'allow_local_delete': True}))
+            with patch('hermes_teleoperator.plugin.config_path', return_value=config), \
+                 patch('hermes_teleoperator.files._hermes_home',
+                       return_value=Path('/nonexistent-test-hermes')), \
+                 patch('hermes_teleoperator.files._gateway_home',
+                       return_value=Path('/nonexistent-test-home')):
+                ctx = Context()
+                register(ctx)
+                self.addCleanup(ctx.cleanup)
+                handler = ctx.tools['teleoperator']['handler']
+                source = transfer / 'moved-source.bin'
+                source.write_bytes(b'move me')
+                destination = transfer / 'moved-destination.bin'
+                result = json.loads(handler({'action': 'transfer', 'source_machine': 'local',
+                                             'source': str(source), 'destination_machine': 'local',
+                                             'destination': str(destination), 'move': True},
+                                            session_id='s'))
+                self.assertTrue(result['moved'])
+                self.assertFalse(source.exists())
+                self.assertEqual(destination.read_bytes(), b'move me')

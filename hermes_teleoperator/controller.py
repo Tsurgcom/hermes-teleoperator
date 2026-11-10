@@ -24,9 +24,11 @@ class Session:
 
 
 class Controller:
-    def __init__(self, targets, factory=None):
+    def __init__(self, targets, factory=None, transfer_dir=None, allow_local_delete=False):
         self.targets = targets
         self.factory = factory or (lambda target: RpcProcess(ssh_argv(target), timeout=target.get('timeout', 120)))
+        self.transfer_dir = transfer_dir
+        self.allow_local_delete = allow_local_delete is True
         self.sessions = {}
         self.lock = threading.RLock()
 
@@ -153,12 +155,16 @@ class Controller:
                 return {'error': str(exc), 'teleoperator': {'machine': state.active, 'fallback': False}}
 
     def transfer(self, key, source_machine, source, destination_machine, destination, move=False):
-        from .files import file_operation
+        from .files import local_file_operation
         state = self._session(key)
         with state.lock:
+            if move and source_machine == 'local' and self.allow_local_delete is not True:
+                raise ValueError('Local moves are disabled; set allow_local_delete in teleoperator.json '
+                                 'to enable gateway-side deletion')
             def endpoint(machine, method, params):
                 if machine == 'local':
-                    return file_operation(method, params)
+                    return local_file_operation(method, params, self.transfer_dir,
+                                                self.allow_local_delete)
                 return self._peer(state, machine).call(method, params)
             content = endpoint(source_machine, 'file_get', {'path': source})
             result = endpoint(destination_machine, 'file_put', {

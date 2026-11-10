@@ -109,6 +109,8 @@ Read any existing `$HERMES_HOME/teleoperator.json` first. Preserve unrelated mac
 
 ```json
 {
+  "transfer_dir": "/home/gateway/hermes-teleoperator-transfer",
+  "allow_local_delete": false,
   "machines": {
     "workstation": {
       "host": "me@workstation",
@@ -122,7 +124,7 @@ Read any existing `$HERMES_HOME/teleoperator.json` first. Preserve unrelated mac
 }
 ```
 
-Add `known_hosts` if using a non-default verified file. Store paths, not key contents or passwords, in this JSON. Use `executable`/`teleoperator_home`, never the removed `python`/`hermes_home` receiver configuration. Repeat probe/deployment per destination; never reuse another machine's returned identity or paths blindly.
+Add `known_hosts` if using a non-default verified file. Store paths, not key contents or passwords, in this JSON. Use `executable`/`teleoperator_home`, never the removed `python`/`hermes_home` receiver configuration. Repeat probe/deployment per destination; never reuse another machine's returned identity or paths blindly. Gateway-local transfers need an existing absolute `transfer_dir`; keep `allow_local_delete` false unless the user explicitly wants `move=true` to delete gateway-side sources. `$HERMES_HOME` and `~/.ssh` are always refused.
 
 Configuration is cached once the plugin's controller is first used. If you queried Teleoperator before adding machines, request the necessary gateway restart/new runtime and conversation reload before testing; a receiver reconnect alone does not reload that configuration. Preserve a continuation note as above.
 

@@ -6,7 +6,7 @@ import shlex
 import threading
 
 from .controller import Controller
-from .configuration import add_machine
+from .configuration import add_machine, load_settings
 
 DESCRIPTION = ('Switch this conversation between local and configured SSH machines. Native terminal, '
                'file and skill tools follow the selected machine. Use search/describe/call for its MCPs. '
@@ -67,11 +67,11 @@ def register(ctx):
         with init_lock:
             path = config_path()
             if not controllers:
-                settings = json.loads(path.read_text()) if path.exists() else {'machines': {}}
-                targets = settings.get('machines', {})
-                if not isinstance(targets, dict) or 'local' in targets:
-                    raise ValueError('machines must be an object; local is reserved')
-                controllers['value'] = Controller(targets)
+                settings = load_settings(path)
+                controllers['value'] = Controller(
+                    settings.get('machines', {}),
+                    transfer_dir=settings.get('transfer_dir'),
+                    allow_local_delete=settings.get('allow_local_delete') is True)
                 controllers['path'] = path
             elif controllers['path'] != path:
                 raise ValueError('Profile changed; refusing ambiguous configuration')

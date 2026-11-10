@@ -1,8 +1,9 @@
-"""Add-only profile configuration. Locking coordinates cooperating writers only.
+"""Profile configuration: validated reads, add-only machine writes.
 
-Paths are deliberately conservative; SSH aliases and paths requiring shell/SSH
-expansion are not accepted. The profile directory must already exist. External
-editors that ignore the advisory lock can still race this operation.
+Locking coordinates cooperating writers only. Paths are deliberately
+conservative; SSH aliases and paths requiring shell/SSH expansion are not
+accepted. The profile directory must already exist. External editors that ignore
+the advisory lock can still race this operation.
 """
 try:
     import fcntl
@@ -35,6 +36,27 @@ def _unique_object(pairs):
 
 def parse_json(text):
     return json.loads(text, object_pairs_hook=_unique_object)
+
+
+def load_settings(path):
+    """Read and validate gateway settings without connecting anywhere."""
+    path = Path(path)
+    if not path.exists():
+        return {'machines': {}}
+    settings = parse_json(path.read_text(encoding='utf-8'))
+    if not isinstance(settings, dict):
+        raise ValueError('Configuration must be a JSON object')
+    targets = settings.get('machines', {})
+    if not isinstance(targets, dict) or 'local' in targets:
+        raise ValueError('machines must be an object; local is reserved')
+    if 'transfer_dir' in settings:
+        transfer_dir = settings['transfer_dir']
+        if (not isinstance(transfer_dir, str) or not transfer_dir
+                or not Path(transfer_dir).expanduser().is_absolute()):
+            raise ValueError('transfer_dir must be a non-empty absolute path')
+    if 'allow_local_delete' in settings and not isinstance(settings['allow_local_delete'], bool):
+        raise ValueError('allow_local_delete must be true or false')
+    return settings
 
 
 def valid_host(host):
