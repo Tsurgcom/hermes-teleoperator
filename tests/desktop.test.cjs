@@ -131,6 +131,7 @@ test('SSH and port share a row and port defaults to 22', () => {
   assert.equal(rowNodes.find(node => node?.props?.name === 'port').props.value, '22');
   nodes.find(node => node?.type === 'form').props.onSubmit({ preventDefault() {} });
   assert.equal(saved.port, undefined, 'untouched default must not override SSH alias configuration');
+  assert.ok(!nodes.some(node => typeof node === 'string' && node.includes('SSH config determines the port')));
 });
 
 test('editing port explicitly saves the chosen value', () => {

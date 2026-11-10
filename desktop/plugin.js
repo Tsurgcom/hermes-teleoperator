@@ -74,7 +74,6 @@ function AddMachineForm({ disabled, saving, onSave, onCancel }) {
           jsx('span', { children: 'Port' }), jsx(Input, { name: 'port', value: values.port, inputMode: 'numeric', autoComplete: 'off', onChange: event => { portEdited.current = true; setValues(old => ({ ...old, port: event.target.value })) } })
         ] })
       ] }),
-      jsx('small', { children: 'SSH config determines the port unless you edit it; otherwise SSH defaults to 22.' }),
       jsxs('details', { children: [
         jsx('summary', { style: { cursor: 'pointer' }, children: 'Advanced' }),
         jsx('div', { style: { display: 'grid', gap: '8px', marginTop: '8px' }, children: fields.map(([key, label, placeholder]) => jsxs('label', { style: { display: 'grid', gap: '3px' }, children: [
