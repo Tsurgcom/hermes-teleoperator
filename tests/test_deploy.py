@@ -162,6 +162,57 @@ class ShellBoundaryTests(unittest.TestCase):
                 deploy.validate_ping({**ping, **changes}, probe, '/private/state')
 
 
+class SshEnvironmentBoundaryTests(unittest.TestCase):
+    PARENT = {'PATH': '/usr/local/bin:/usr/bin', 'HOME': '/home/alice', 'USER': 'alice',
+              'LOGNAME': 'alice', 'LANG': 'en_GB.UTF-8', 'LC_ALL': 'C.UTF-8',
+              'SSH_AUTH_SOCK': '/run/user/1000/ssh-agent.sock', 'TERM': 'xterm-256color',
+              'OPENAI_API_KEY': 'gateway-placeholder', 'AWS_SECRET_ACCESS_KEY': 'aws-secret',
+              'HERMES_HOME': '/gateway/private', 'SSH_ASKPASS': '/gateway/askpass'}
+    EXPECTED = {'PATH': '/usr/local/bin:/usr/bin', 'HOME': '/home/alice', 'USER': 'alice',
+                'LOGNAME': 'alice', 'LANG': 'en_GB.UTF-8', 'LC_ALL': 'C.UTF-8',
+                'SSH_AUTH_SOCK': '/run/user/1000/ssh-agent.sock', 'TERM': 'xterm-256color'}
+
+    def test_shell_and_ping_paths_use_only_the_allowlisted_environment(self):
+        run_calls, rpc_calls = [], []
+
+        class Result:
+            returncode = 0
+            stdout = b'ok'
+            stderr = b''
+
+        class RpcSpy:
+            def __init__(self, argv, **kwargs):
+                rpc_calls.append((argv, kwargs))
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def call(self, method):
+                return {'version': deploy.VERSION, 'protocol': 2,
+                        'runtime': 'standalone-rust', 'home': '/home/alice',
+                        'hostname': 'host', 'platform': 'linux',
+                        'teleoperator_home': '/state'}
+
+        target = {'host': 'workstation-alias', 'identity_file': '/keys/teleoperator',
+                  'known_hosts': '/keys/known_hosts'}
+        with patch.dict(os.environ, self.PARENT, clear=True), \
+                patch.object(deploy.subprocess, 'run',
+                             side_effect=lambda argv, **kwargs: (
+                                 run_calls.append((argv, kwargs)) or Result())), \
+                patch.object(deploy, 'RpcProcess', RpcSpy):
+            self.assertEqual(deploy._run(target, 'true'), b'ok')
+            deploy._ping(target, '/home/alice/receiver',
+                         {'home': '/home/alice', 'hostname': 'host', 'os': 'Linux'},
+                         '/state')
+        self.assertEqual(len(run_calls), 1)
+        self.assertEqual(len(rpc_calls), 1)
+        self.assertEqual(run_calls[0][1]['env'], self.EXPECTED)
+        self.assertEqual(rpc_calls[0][1]['env'], self.EXPECTED)
+
+
 class DeploymentFlowTests(unittest.TestCase):
     def test_gateway_rejects_corrupt_release_before_remote_staging(self):
         probe = {**linux(), 'uid': '1000', 'user': 'alice', 'home': '/home/alice',

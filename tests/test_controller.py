@@ -1,4 +1,6 @@
+import os
 import unittest
+from unittest.mock import patch
 from hermes_teleoperator.version import VERSION
 from hermes_teleoperator.controller import Controller
 
@@ -149,3 +151,14 @@ class ControllerTests(unittest.TestCase):
     def test_no_shared_implicit_session(self):
         with self.assertRaises(ValueError):
             self.controller.switch('', 'alpha')
+
+
+class ControllerSshEnvironmentTests(unittest.TestCase):
+    def test_default_factory_gives_ssh_only_the_allowlisted_environment(self):
+        parent = {'PATH': '/usr/bin', 'HOME': '/home/alice', 'TERM': 'xterm',
+                  'OPENAI_API_KEY': 'gateway-placeholder', 'AWS_SECRET_ACCESS_KEY': 'secret'}
+        with patch.dict(os.environ, parent, clear=True), \
+                patch('hermes_teleoperator.controller.RpcProcess') as rpc:
+            Controller({'alpha': {'host': 'alpha'}}).factory({'host': 'alpha', 'timeout': 5})
+        self.assertEqual(rpc.call_args.kwargs['env'],
+                         {'PATH': '/usr/bin', 'HOME': '/home/alice', 'TERM': 'xterm'})
