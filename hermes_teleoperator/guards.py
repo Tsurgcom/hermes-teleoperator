@@ -25,6 +25,7 @@ a raising call, a non-dict verdict) refuses the remote call instead of running
 it unguarded — the plugin never trades a guard for availability.
 """
 from dataclasses import dataclass, field
+import hashlib
 
 # The backend name the command gate evaluates: remote SSH authority. It is not a
 # container backend, so the container fast path cannot approve a command for us.
@@ -87,11 +88,43 @@ def _verdict(verdict, source):
     return Decision(False, message, source, status, details)
 
 
+def _process_action(args):
+    action = args.get('action') if isinstance(args, dict) else None
+    return action.lower() if isinstance(action, str) else ''
+
+
+def _process_payload(args):
+    """Stdin for process write/submit.
+
+    ``None`` means the call is not one identifiable string (both ``data`` and
+    ``text``, or a non-string). Missing stdin is an empty payload.
+    """
+    if not isinstance(args, dict):
+        return None
+    data, text = args.get('data'), args.get('text')
+    if data is not None and text is not None:
+        return None
+    payload = data if data is not None else text
+    if payload is None:
+        return ''
+    if not isinstance(payload, str):
+        return None
+    return payload
+
+
 def target_key(tool_name, args):
     """Stable allowlist grain: write directory, exact skill-name set, or tool.
 
     An unidentifiable skill batch has no safe approval scope and returns None.
+    ``write`` and ``submit`` are keyed by the exact stdin payload, so approving
+    one command does not approve a later one and does not share ``kill``'s key.
     """
+    if tool_name in PROCESS_TOOLS and _process_action(args) in {'write', 'submit'}:
+        payload = _process_payload(args)
+        if payload is None:
+            return None
+        digest = hashlib.sha256(payload.encode()).hexdigest()
+        return f'process:{_process_action(args)}:{digest}'
     if tool_name in {'write_file', 'patch'}:
         path = args.get('path') or args.get('file_path') or ''
         if not isinstance(path, str):
@@ -179,6 +212,9 @@ def human_decision(tool_name, args, machine):
     if target is None:
         return _blocked('Cannot identify every skill target; refusing remote execution')
     reason = f'{tool_name} on machine {machine!r} ({target})'
+    if tool_name in PROCESS_TOOLS and _process_action(args) in {'write', 'submit'}:
+        payload = _process_payload(args) or ''
+        reason = f'{reason}\nstdin: {payload[:500]}'
     rule_key = f'teleoperator:{machine}:{target}'
     try:
         from tools.approval import request_tool_approval
@@ -206,5 +242,13 @@ def decide(tool_name, args, *, machine):
             return Decision(True, source='local-parity')
         return Decision(True, source='ungated')
     if tool_name == 'terminal':
-        return command_decision(args.get('command'))
+        return command_decision(args.get('command') if isinstance(args, dict) else None)
+    if tool_name in PROCESS_TOOLS and _process_action(args) in {'write', 'submit'}:
+        payload = _process_payload(args)
+        if payload is None:
+            return _blocked('Process stdin must be one string in data or text, not both')
+        if payload.strip():
+            decision = command_decision(payload)
+            if not decision.allowed:
+                return decision
     return human_decision(tool_name, args, machine)

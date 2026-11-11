@@ -1,7 +1,7 @@
 ---
 name: hermes-teleoperator
 description: Use when moving between hosts; route native tools safely.
-version: 0.1.0
+version: 1.2.0
 author: Hermes Teleoperator contributors
 license: MIT
 platforms: [linux]

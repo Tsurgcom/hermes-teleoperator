@@ -41,6 +41,21 @@ class TransferTests(unittest.TestCase):
             self.assertFalse(path.exists())
             self.assertEqual(list(Path(tmp).iterdir()), [])
 
+    def test_intermediate_symlink_is_not_followed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            real = base / 'real'
+            real.mkdir()
+            target = real / 'file.bin'
+            target.write_bytes(b'abc')
+            link = base / 'linkdir'
+            link.symlink_to(real, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, 'symlink'):
+                file_operation('file_get', {'path': str(link / 'file.bin')})
+            with self.assertRaisesRegex(ValueError, 'not a directory'):
+                file_operation('file_get', {'path': str(target) + '/child'})
+            self.assertEqual(target.read_bytes(), b'abc')
+
 
 class LocalTransferTests(unittest.TestCase):
     def setUp(self):

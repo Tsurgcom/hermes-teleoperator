@@ -3,6 +3,7 @@ from pathlib import Path
 import re
 import tomllib
 import unittest
+import hermes_teleoperator
 from hermes_teleoperator.version import VERSION
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,3 +21,5 @@ class VersionParityTests(unittest.TestCase):
         self.assertIsNotNone(match)
         assert match is not None
         self.assertEqual(match.group(1), VERSION)
+        self.assertEqual(hermes_teleoperator.__version__, VERSION)
+        self.assertIn(f'version: {VERSION}\n', (ROOT / 'skills/hermes-teleoperator/SKILL.md').read_text())

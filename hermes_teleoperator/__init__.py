@@ -1,2 +1,4 @@
 """Hermes Teleoperator: session-scoped tool teleportation over SSH."""
-__version__ = '0.1.0'
+from hermes_teleoperator.version import VERSION
+
+__version__ = VERSION
