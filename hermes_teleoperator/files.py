@@ -5,11 +5,14 @@ must use ``local_file_operation``, which confines every path to a configured
 transfer directory and refuses Hermes/SSH secrets before touching the disk.
 """
 import base64
+import ctypes
+import ctypes.util
 import errno
 import hashlib
 import os
 from pathlib import Path
 import stat
+import sys
 import time
 
 MAX_FILE = 8 * 1024 * 1024
@@ -172,6 +175,61 @@ def _write_all(fd, data):
         view = view[written:]
 
 
+def _libc():
+    name = ctypes.util.find_library('c')
+    if not name:
+        return None
+    libc = ctypes.CDLL(name, use_errno=True)
+    libc.linkat.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+    libc.linkat.restype = ctypes.c_int
+    return libc
+
+
+_LIBC = _libc() if sys.platform.startswith('linux') else None
+_AT_EMPTY_PATH = 0x1000
+
+
+def _same_inode(left, right):
+    return stat.S_ISREG(right.st_mode) and (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
+
+
+def _unlink_if_same(dir_fd, name, stage_fd):
+    try:
+        found = _open_leaf(dir_fd, name)
+    except (OSError, ValueError):
+        return
+    try:
+        if _same_inode(os.fstat(stage_fd), os.fstat(found)):
+            os.unlink(name, dir_fd=dir_fd)
+    finally:
+        os.close(found)
+
+
+def _require_published(stage_fd, dir_fd, leaf):
+    published = _open_leaf(dir_fd, leaf)
+    try:
+        if not _same_inode(os.fstat(stage_fd), os.fstat(published)):
+            raise ValueError('Published file did not match the staged bytes')
+    finally:
+        os.close(published)
+
+
+def _publish(stage_fd, dir_fd, staging, leaf):
+    """Link the open inode, then refuse to report its checksum if the destination is a different file."""
+    if _LIBC is not None:
+        rc = _LIBC.linkat(stage_fd, b'', dir_fd, os.fsencode(leaf), _AT_EMPTY_PATH)
+        if rc == 0:
+            _require_published(stage_fd, dir_fd, leaf)
+            return
+        err = ctypes.get_errno()
+        if err == errno.EEXIST:
+            raise FileExistsError(err, os.strerror(err), leaf)
+        if err not in (errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS, errno.EPERM, errno.EACCES):
+            raise OSError(err, os.strerror(err), leaf)
+    os.link(staging, leaf, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    _require_published(stage_fd, dir_fd, leaf)
+
+
 def _file_put(path, params):
     if len(params['data']) > (MAX_FILE * 4 // 3 + 8):
         raise ValueError('File exceeds transfer limit')
@@ -182,44 +240,57 @@ def _file_put(path, params):
     dir_fd, leaf = _open_parent(path)
     staging = f'.teleoperator-{os.getpid()}-{time.time_ns()}'
     stage_fd = -1
+    created = False
     try:
         stage_fd = os.open(staging, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
                            0o600, dir_fd=dir_fd)
+        created = True
         _write_all(stage_fd, data)
         os.fsync(stage_fd)
-        os.close(stage_fd)
-        stage_fd = -1
-        # link publishes atomically and refuses existing destinations.
-        os.link(staging, leaf, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        _publish(stage_fd, dir_fd, staging, leaf)
     finally:
+        if created and stage_fd >= 0:
+            try:
+                _unlink_if_same(dir_fd, staging, stage_fd)
+            except OSError:
+                pass
         if stage_fd >= 0:
             os.close(stage_fd)
-        try:
-            os.unlink(staging, dir_fd=dir_fd)
-        except FileNotFoundError:
-            pass
         os.close(dir_fd)
     return {'path': str(path), 'sha256': digest, 'size': len(data)}
 
 
 def _file_remove(path, params):
+    expected = params['sha256']
     dir_fd, leaf = _open_parent(path)
+    token = f'.teleoperator-rm-{os.getpid()}-{time.time_ns()}'
     try:
         fd = _open_leaf(dir_fd, leaf)
         try:
             data, info = _read_fd(fd)
+            if hashlib.sha256(data).hexdigest() != expected:
+                raise ValueError('Source changed; refusing deletion')
+            os.rename(leaf, token, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+            try:
+                held = os.fstat(fd)
+                check = _open_leaf(dir_fd, token)
+                try:
+                    current = os.fstat(check)
+                    os.lseek(check, 0, os.SEEK_SET)
+                    again, _info = _read_fd(check)
+                finally:
+                    os.close(check)
+                if not _same_inode(held, current) or hashlib.sha256(again).hexdigest() != expected:
+                    raise ValueError('Source changed; refusing deletion')
+                os.unlink(token, dir_fd=dir_fd)
+            except Exception:
+                try:
+                    os.rename(token, leaf, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+                except OSError:
+                    pass
+                raise
         finally:
             os.close(fd)
-        if hashlib.sha256(data).hexdigest() != params['sha256']:
-            raise ValueError('Source changed; refusing deletion')
-        again = _open_leaf(dir_fd, leaf)
-        try:
-            current = os.fstat(again)
-        finally:
-            os.close(again)
-        if (info.st_dev, info.st_ino) != (current.st_dev, current.st_ino) or not stat.S_ISREG(current.st_mode):
-            raise ValueError('Source changed; refusing deletion')
-        os.unlink(leaf, dir_fd=dir_fd)
     finally:
         os.close(dir_fd)
     return {'removed': str(path)}

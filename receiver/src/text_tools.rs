@@ -9,7 +9,48 @@ pub fn text_tool(name:&str,v:&Value)->Result<Value,String>{match name{
  "patch"=>{args(v,&["path","old_string","new_string","replace_all"])?;let p=path(text(v,"path")?)?;let old=text(v,"old_string")?;let new=text(v,"new_string")?;if old.is_empty()||old==new{return Err("old_string must be nonempty and differ from new_string".into());}let s=read_string(&p)?;let count=s.matches(old).count();if count==0||count>1&&!boolean(v,"replace_all")?{return Err(format!("Expected unique match; found {count}. Use replace_all for multiple matches"));}let result=s.replace(old,new);crate::files::replace(&p,&result)?;Ok(json!({"success":true,"replacements":count,"path":p}))},
  "search_files"=>search(v),_=>tool(name,v)}}
 fn prefix_bytes(s:&str,max:usize)->&str{if s.len()<=max{return s;}let mut end=max;while end>0&&!s.is_char_boundary(end){end-=1;}&s[..end]}
-fn read_file(v:&Value)->Result<Value,String>{const BUDGET:usize=100_000;args(v,&["path","offset","limit"])?;let p=path(text(v,"path")?)?;let s=read_string(&p)?;let offset=number(v,"offset",1,usize::MAX)?;if offset==0{return Err("offset is 1-indexed".into());}let limit=number(v,"limit",2000,2000)?;let lines:Vec<_>=s.lines().collect();let mut content=String::new();let mut next=offset;let mut cut=false;for (i,l) in lines.iter().enumerate().skip(offset-1).take(limit){let line=format!("{}|{}",i+1,l);let extra=line.len()+if content.is_empty(){0}else{1};if content.len()+extra>BUDGET{if content.is_empty(){content.push_str(prefix_bytes(&line,BUDGET));cut=true;next=i+2;}break;}if !content.is_empty(){content.push('\n');}content.push_str(&line);next=i+2;}Ok(json!({"content":content,"total_lines":lines.len(),"file_size":s.len(),"truncated":cut||next<=lines.len(),"next_offset":next,"is_binary":false,"is_image":false,"not_found":false}))}
+fn read_file(v:&Value)->Result<Value,String>{
+ const BUDGET:usize=100_000;
+ args(v,&["path","offset","limit","byte_offset"])?;
+ let p=path(text(v,"path")?)?;
+ let s=read_string(&p)?;
+ let offset=number(v,"offset",1,usize::MAX)?;
+ if offset==0{return Err("offset is 1-indexed".into());}
+ let limit=number(v,"limit",2000,2000)?;
+ let byte_offset=number(v,"byte_offset",0,usize::MAX)?;
+ let lines:Vec<_>=s.lines().collect();
+ let mut content=String::new();
+ let mut next=offset;
+ let mut next_byte=0usize;
+ let mut cut=false;
+ let mut first=true;
+ for (i,l) in lines.iter().enumerate().skip(offset-1).take(limit){
+  let start=if first{first=false;byte_offset}else{0};
+  if start>l.len()||(start>0&&!l.is_char_boundary(start)){return Err("byte_offset is outside the line or splits a character".into());}
+  if start==l.len(){next=i+2;next_byte=0;continue;}
+  let body=&l[start..];
+  let header=if start==0{format!("{}|",i+1)}else{String::new()};
+  let line=format!("{header}{body}");
+  let extra=line.len()+if content.is_empty(){0}else{1};
+  if content.len()+extra>BUDGET{
+   if content.is_empty(){
+    let shown=prefix_bytes(&line,BUDGET);
+    content.push_str(shown);
+    let raw=shown.len().saturating_sub(header.len());
+    next=i+1;
+    next_byte=start+raw;
+    if next_byte==start{next=i+2;next_byte=0;}
+   }else{next=i+1;next_byte=0;}
+   cut=true;
+   break;
+  }
+  if !content.is_empty(){content.push('\n');}
+  content.push_str(&line);
+  next=i+2;
+  next_byte=0;
+ }
+ Ok(json!({"content":content,"total_lines":lines.len(),"file_size":s.len(),"truncated":cut||next<=lines.len(),"next_offset":next,"next_byte":next_byte,"is_binary":false,"is_image":false,"not_found":false}))
+}
 pub fn tool(name:&str,v:&Value)->Result<Value,String>{match name{
  "read_file"=>read_file(v),
  "write_file"|"patch"|"search_files"=>text_tool(name,v),_=>Err(format!("Unknown text tool: {name}"))}}

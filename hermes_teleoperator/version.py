@@ -1,13 +1,13 @@
 """Gateway/receiver release identity; kept in sync with package manifests."""
 
-VERSION = '1.2.0'
+VERSION = '1.2.1'
 
-# Per-asset SHA256 for the exact release tag ``v{VERSION}``. This table is the
-# trust root for receiver downloads: deploy.py and install.sh verify downloaded
-# bytes against these values. SHA256SUMS is still fetched and cross-checked so a
-# rewritten release is detected, but it is never trusted on its own.
-# Regenerate with ``python scripts/sync_receiver_digests.py`` after a release
-# build, then commit before tagging that release.
+# The digests below are still the attested pins for the v1.2.0 release
+# artifacts. They are not the bytes of this tree. Regenerate them with
+# ``python scripts/sync_receiver_digests.py --from-sums SHA256SUMS`` from a
+# v1.2.1 candidate build before tagging. deploy.py and install.sh verify
+# downloads against this table; the publish job refuses a tag whose rebuilt
+# assets do not match it. SHA256SUMS is cross-checked and is never the trust root.
 RECEIVER_SHA256 = {
     'hermes-teleoperator-receiver-aarch64-apple-darwin':
         '6cb7f126fc9d08a5457b868534267c7cac1098ac0fcea50224e2db1948d9fa41',

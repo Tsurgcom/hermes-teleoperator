@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -184,3 +185,15 @@ class LocalTransferTests(unittest.TestCase):
                                   **_payload(b'ssh-ed25519 attacker')},
                                  transfer_dir)
         self.assertFalse((ssh / 'authorized_keys').exists())
+
+    def test_failed_staging_create_keeps_the_existing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch('hermes_teleoperator.files.time.time_ns', return_value=123):
+                staging = root / f'.teleoperator-{os.getpid()}-123'
+                staging.write_bytes(b'keep')
+                dest = root / 'out.bin'
+                with self.assertRaises(FileExistsError):
+                    file_operation('file_put', {'path': str(dest), **_payload(b'abc')})
+                self.assertEqual(staging.read_bytes(), b'keep')
+                self.assertFalse(dest.exists())

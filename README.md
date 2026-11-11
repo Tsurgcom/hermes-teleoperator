@@ -85,7 +85,7 @@ python -m hermes_teleoperator.deploy me@workstation \
   --public-key-file "$HOME/.ssh/teleoperator-workstation.pub"
 ```
 
-The helper probes the destination's actual userland ABI over strict SSH, downloads the exact gateway-matching release onto the gateway, verifies the asset against a per-asset SHA256 committed in `hermes_teleoperator/version.py` for that release tag, then transfers bytes over SSH for offline installation. It never selects `latest`, downloads on the client, or transfers a private key. `--version v1.2.0` is optional and must match the gateway exactly. `--port`, `--known-hosts` and `--teleoperator-home` are supported. Root requires `--allow-root`; sudo-derived identity is rejected. `SHA256SUMS` is fetched and cross-checked so a rewritten release is reported, but the source pin is the trust root; neither is an independent publisher signature.
+The helper probes the destination's actual userland ABI over strict SSH, downloads the exact gateway-matching release onto the gateway, verifies the asset against a per-asset SHA256 committed in `hermes_teleoperator/version.py` for that release tag, then transfers bytes over SSH for offline installation. It never selects `latest`, downloads on the client, or transfers a private key. `--version v1.2.1` is optional and must match the gateway exactly. `--port`, `--known-hosts` and `--teleoperator-home` are supported. Root requires `--allow-root`; sudo-derived identity is rejected. `SHA256SUMS` is fetched and cross-checked so a rewritten release is reported, but the source pin is the trust root; neither is an independent publisher signature.
 
 Selection prefers static musl on supported Linux targets, falling back to glibc only for s390x and ppc64le with proven version floors. It checks ELF word size/endianness (including 32-bit userland on a 64-bit kernel), ARM hard-float, RISC-V ISA, CPU/kernel minimums, macOS version and Rosetta. Ambiguous or unsupported combinations fail rather than guessing. A staged receiver must pass an exact version/protocol/identity handshake before the live launcher switches atomically. Existing skills, config and unrelated SSH keys are preserved; a failed transfer or staged handshake leaves the live launcher unchanged. Old content-addressed binaries are retained for inspection, not automatically pruned. Disconnect live sessions before upgrading. SSH mutations are never automatically retried; inspect ambiguous failures before rerunning.
 
@@ -104,7 +104,7 @@ Release installation, after a release containing binaries has been published:
 ```sh
 REF=REVIEWED_FULL_COMMIT_SHA
 curl -fsSL "https://raw.githubusercontent.com/Tsurgcom/hermes-teleoperator/$REF/install.sh" |
-  bash -s -- --version v1.2.0 \
+  bash -s -- --version v1.2.1 \
     --public-key 'ssh-ed25519 AAAA... gateway-key'
 ```
 
