@@ -27,7 +27,9 @@ fn read_file(v:&Value)->Result<Value,String>{
  for (i,l) in lines.iter().enumerate().skip(offset-1).take(limit){
   let start=if first{first=false;byte_offset}else{0};
   if start>l.len()||(start>0&&!l.is_char_boundary(start)){return Err("byte_offset is outside the line or splits a character".into());}
-  if start==l.len(){next=i+2;next_byte=0;continue;}
+  // A resumed read can land on the end of a line already consumed. An empty
+  // line has start == 0 and must still be emitted, or blank lines disappear.
+  if start>0&&start==l.len(){next=i+2;next_byte=0;continue;}
   let body=&l[start..];
   let header=if start==0{format!("{}|",i+1)}else{String::new()};
   let line=format!("{header}{body}");

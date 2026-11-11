@@ -1,4 +1,5 @@
 """Release provenance: source pins, installer parity and hosted-runner attestation."""
+import hashlib
 import os
 import re
 import subprocess
@@ -64,8 +65,17 @@ class PinnedDigestTests(unittest.TestCase):
             result = subprocess.run(
                 [sys.executable, 'scripts/verify_release_digests.py', str(artifacts)],
                 cwd=ROOT, capture_output=True, text=True, timeout=30)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('do not match the source pins', result.stderr)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('source pins attest v', result.stderr)
+            self.assertIn(f'v{VERSION}', result.stderr)
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                'verify_release_digests', ROOT / 'scripts/verify_release_digests.py')
+            verifier = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(verifier)
+            pins = {asset: hashlib.sha256(asset.encode()).hexdigest() for asset in deploy.ASSETS}
+            errors = verifier.check_artifacts(artifacts, pins)
+            self.assertTrue(any('do not match the source pins' in line for line in errors), errors)
 
     def test_release_verifier_rejects_a_missing_artifact(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -73,7 +83,8 @@ class PinnedDigestTests(unittest.TestCase):
                 [sys.executable, 'scripts/verify_release_digests.py', tmp],
                 cwd=ROOT, capture_output=True, text=True, timeout=30)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('Release artifacts missing', result.stderr)
+        self.assertIn('source pins attest', result.stderr)
+        self.assertIn('before tagging or publishing', result.stderr)
 
     @unittest.skipUnless(os.environ.get('TELEOPERATOR_VERIFY_PUBLISHED_RELEASE') == VERSION,
                          'opt-in: set TELEOPERATOR_VERIFY_PUBLISHED_RELEASE=<version> to check the live release')

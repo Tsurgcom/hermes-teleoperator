@@ -611,7 +611,8 @@ class OfflineExecutionTests(unittest.TestCase):
             with patch.object(deploy, '_run', side_effect=local_run), \
                  patch.object(deploy, '_ping', side_effect=local_ping), \
                  patch.object(deploy, '_fetch', side_effect=fetch), \
-                 patch.object(deploy, 'RECEIVER_SHA256', {asset: digest}):
+                 patch.object(deploy, 'RECEIVER_SHA256', {asset: digest}), \
+                 patch.object(deploy, 'RECEIVER_PINS_VERSION', deploy.VERSION):
                 result = deploy.deploy({'host': 'unused'}, allow_root=True)
                 self.assertEqual(result['handshake']['version'], deploy.VERSION)
                 launcher = Path(result['executable'])
@@ -703,7 +704,8 @@ X11Forwarding no
                 public_release = os.environ.get('TELEOPERATOR_DEPLOY_PUBLIC_RELEASE') == deploy.VERSION
                 pins = {} if public_release else {asset: digest}
                 with patch.object(deploy, '_fetch', side_effect=fetch), \
-                     patch.object(deploy, 'RECEIVER_SHA256', pins):
+                     patch.object(deploy, 'RECEIVER_SHA256', pins), \
+                     patch.object(deploy, 'RECEIVER_PINS_VERSION', deploy.VERSION):
                     result = deploy.deploy(target, allow_root=True,
                                            public_key=(d / 'dedicated.pub').read_text())
                     self.assertEqual(result['handshake']['version'], deploy.VERSION)

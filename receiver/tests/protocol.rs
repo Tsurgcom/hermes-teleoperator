@@ -201,6 +201,39 @@ impl Drop for Client {fn drop(&mut self){self.input.take();self.child.wait().unw
  if alive==0{unsafe{libc::kill(pid,libc::SIGKILL);}}
  assert_eq!(alive,-1,"orphaned sleep {pid} survived poll: {polled}");
 }
+#[test] fn read_file_keeps_blank_lines() {
+ let mut c=Client::new();let p=std::env::current_dir().unwrap().join("target/blank-lines.txt");
+ std::fs::write(&p,"alpha\n\nbeta\n\n").unwrap();
+ let got=c.tool("read_file",json!({"path":p}));
+ assert_eq!(got["result"]["truncated"],false,"{got}");
+ assert_eq!(got["result"]["total_lines"],4,"{got}");
+ assert_eq!(got["result"]["content"],"1|alpha\n2|\n3|beta\n4|","{got}");
+ assert_eq!(got["result"]["next_byte"],0,"{got}");
+ std::fs::remove_file(p).unwrap();
+}
+#[test] fn unset_path_stays_unset() {
+ let mut c=Client::new();
+ let first=c.tool("terminal",json!({"command":"unset PATH; printf '%s' \"${PATH-unset}\""}));
+ assert_eq!(first["result"]["output"],"unset","{first}");
+ assert_eq!(first["result"]["exit_code"],0,"{first}");
+ let second=c.tool("terminal",json!({"command":"printf '%s' \"${PATH-still-unset}\""}));
+ assert_eq!(second["result"]["output"],"still-unset","{second}");
+ let restored=c.tool("terminal",json!({"command":"export PATH=/usr/bin:/bin; printf '%s' \"$PATH\""}));
+ assert_eq!(restored["result"]["output"],"/usr/bin:/bin","{restored}");
+ let kept=c.tool("terminal",json!({"command":"printf '%s' \"$PATH\""}));
+ assert_eq!(kept["result"]["output"],"/usr/bin:/bin","{kept}");
+}
+#[test] fn foreground_command_kills_descendants_when_the_leader_exits() {
+ let mut c=Client::new();
+ let marker=std::env::temp_dir().join(format!("teleop-foreground-child-{}",std::process::id()));
+ let _=std::fs::remove_file(&marker);
+ let command=format!("(sleep 1; printf leaked > '{}') &",marker.display());
+ let ran=c.tool("terminal",json!({"command":command,"timeout":30}));
+ assert_eq!(ran["result"]["exit_code"],0,"{ran}");
+ assert_eq!(ran["result"]["timed_out"],false,"{ran}");
+ std::thread::sleep(std::time::Duration::from_millis(1500));
+ assert!(!marker.exists(),"foreground child wrote {} after the command returned: {ran}",marker.display());
+}
 #[test] fn root_skill_is_not_a_silent_leaf_match_and_deep_paths_are_rejected() {
  let home=std::env::current_dir().unwrap().join("target/skill-root-depth");let _=std::fs::remove_dir_all(&home);std::fs::create_dir_all(&home).unwrap();
  let mut child=Command::new(env!("CARGO_BIN_EXE_hermes-teleoperator-receiver")).env("TELEOPERATOR_HOME",&home).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();

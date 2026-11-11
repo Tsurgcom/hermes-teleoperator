@@ -2,12 +2,13 @@
 
 VERSION = '1.2.1'
 
-# The digests below are still the attested pins for the v1.2.0 release
-# artifacts. They are not the bytes of this tree. Regenerate them with
+# Digests below attest the receiver binaries of RECEIVER_PINS_VERSION, which is
+# not this tree while it differs from VERSION. Regenerate both with
 # ``python scripts/sync_receiver_digests.py --from-sums SHA256SUMS`` from a
-# v1.2.1 candidate build before tagging. deploy.py and install.sh verify
-# downloads against this table; the publish job refuses a tag whose rebuilt
-# assets do not match it. SHA256SUMS is cross-checked and is never the trust root.
+# candidate build of VERSION before tagging. deploy.py refuses a download, and
+# the publish job refuses the tag, until the pins are for this version.
+# SHA256SUMS is cross-checked and is never the trust root.
+RECEIVER_PINS_VERSION = '1.2.0'
 RECEIVER_SHA256 = {
     'hermes-teleoperator-receiver-aarch64-apple-darwin':
         '6cb7f126fc9d08a5457b868534267c7cac1098ac0fcea50224e2db1948d9fa41',
