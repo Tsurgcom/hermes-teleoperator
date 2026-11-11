@@ -36,9 +36,8 @@ REMOTE_ENV_TYPE = 'ssh'
 # human gate instead.
 GATED_TOOLS = frozenset({'write_file', 'patch', 'skill_manage'})
 
-# Read-style tools keep local parity: Hermes does not prompt for a local read
-# either, so routing one adds no privilege. Secret-file redaction is a gateway
-# concern documented in the README.
+# Reads generally keep local parity, except credential paths and content searches:
+# the remote receiver does not apply the gateway's credential-file redaction.
 READ_TOOLS = frozenset({'read_file', 'search_files', 'skills_list', 'skill_view'})
 
 # Process actions that change state. ``list``/``status``/``poll``/``wait`` are
@@ -89,8 +88,10 @@ def _verdict(verdict, source):
 
 
 def target_key(tool_name, args):
-    """Stable, human-meaningful grain for the ``[a]lways`` allowlist: one entry
-    per remote directory (writes) or per tool (skills and MCP calls)."""
+    """Stable allowlist grain: write directory, exact skill-name set, or tool.
+
+    An unidentifiable skill batch has no safe approval scope and returns None.
+    """
     if tool_name in {'write_file', 'patch'}:
         path = args.get('path') or args.get('file_path') or ''
         if not isinstance(path, str):
@@ -98,8 +99,14 @@ def target_key(tool_name, args):
         directory = path.rsplit('/', 1)[0] if '/' in path else '.'
         return f'write:{directory or "/"}'
     if tool_name == 'skill_manage':
-        name = args.get('name') or args.get('skill') or ''
-        return f'skill:{name if isinstance(name, str) else ""}'
+        operations = args.get('operations')
+        if isinstance(operations, list) and operations and all(
+                isinstance(op, dict) and isinstance(op.get('name'), str) and op['name']
+                for op in operations):
+            import json
+            return 'skills:' + json.dumps(sorted({op['name'] for op in operations}),
+                                          ensure_ascii=True, separators=(',', ':'))
+        return None
     return f'tool:{tool_name}'
 
 
@@ -130,6 +137,10 @@ def secret_read_refusal(tool_name, args):
     """Reason a routed read must not run, or '' when it may."""
     if tool_name not in {'read_file', 'search_files'}:
         return ''
+    if tool_name == 'search_files' and (not isinstance(args, dict) or args.get('target') != 'files'):
+        return ('Refusing remote content search: recursive searches can return unredacted '
+                'credential files. Use target=files to search filenames, or an approved '
+                'terminal command if content search is needed.')
     path = args.get('path') if isinstance(args, dict) else None
     if not isinstance(path, str) or not path:
         return ''
@@ -164,8 +175,11 @@ def human_decision(tool_name, args, machine):
     call (``_approval_observability``), so the gate routes the prompt to the
     conversation that asked — no identity is inferred here.
     """
-    reason = f'{tool_name} on machine {machine!r} ({target_key(tool_name, args)})'
-    rule_key = f'teleoperator:{machine}:{target_key(tool_name, args)}'
+    target = target_key(tool_name, args)
+    if target is None:
+        return _blocked('Cannot identify every skill target; refusing remote execution')
+    reason = f'{tool_name} on machine {machine!r} ({target})'
+    rule_key = f'teleoperator:{machine}:{target}'
     try:
         from tools.approval import request_tool_approval
         return _verdict(request_tool_approval(tool_name, reason, rule_key=rule_key),

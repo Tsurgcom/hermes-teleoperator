@@ -25,21 +25,24 @@ A non-root destination account is the default. Direct root installation needs ex
 
 Read the repository README and the installed Hermes CLI's help. Load the `hermes-agent` skill if available. Check `hermes --version`, `hermes plugins install --help` and existing plugins before installing: do not create a second discovery path for an already-installed copy.
 
-For the corrected **v1.1.2 gateway/installer source** (safe install scan and source-pinned receiver digests), the immutable commit is:
-
-```text
-9e64ed28a9dc741644f1a2204438b93e321c939a
-```
-
-Run on the **gateway**, with the intended profile selected (use `hermes -p <profile> ...` when appropriate):
+For **v1.2.0**, first verify that the release and its receiver assets have actually been published. In a verified checkout on the gateway, fetch the exact tag from the trusted repository and resolve it to a full commit SHA (the `^{commit}` suffix also handles annotated tags):
 
 ```sh
-hermes plugins install Tsurgcom/hermes-teleoperator \
-  --ref 9e64ed28a9dc741644f1a2204438b93e321c939a --enable
+git fetch https://github.com/Tsurgcom/hermes-teleoperator.git refs/tags/v1.2.0:refs/tags/v1.2.0 && \
+  SOURCE_SHA=$(git rev-parse --verify 'refs/tags/v1.2.0^{commit}') && \
+  printf '%s\n' "$SOURCE_SHA"
+```
+
+Independently compare that SHA with the reviewed release source and marketplace catalog `sha:`, and verify its version metadata, source-pinned receiver digests and published assets together as described in `RELEASING.md`. A tag name alone is not independent proof of authenticity. If the tag, catalog pin or assets are unavailable or disagree, stop; do not substitute `main`, `latest`, an older receiver or an unreviewed SHA. Do not move an existing tag to conceal a mismatch.
+
+After verification, run on the **gateway**, with the intended profile selected (use `hermes -p <profile> ...` when appropriate):
+
+```sh
+hermes plugins install Tsurgcom/hermes-teleoperator --ref "$SOURCE_SHA" --enable
 hermes plugins list
 ```
 
-This guide's source pin includes the scan and receiver-digest fixes; receiver source/version is unchanged and the corresponding binary assets exist in release `v1.1.2`. Do not use the original v1.1.2 source tag for the gateway or installer: it predates the scan fixes. Do not mix `main` source, an arbitrary receiver release and an older installed gateway. For a future release, verify the published tag's full commit SHA, version metadata and assets together before choosing a new pin. Do not move tags or use `latest` to conceal a mismatch. The marketplace catalog `sha:` and the release tag `v{VERSION}` must resolve to the same commit as this pin; see `RELEASING.md` for the digest-pinning and provenance process.
+Historical note: the original v1.1.2 tag predates the corrected installer scan and source-pinned receiver digests. Its later corrected gateway/installer source used a separate commit; do not treat the old tag as containing those fixes.
 
 Use the plugin directory reported by installation/listing as `PLUGIN_DIR`. Validate it with:
 

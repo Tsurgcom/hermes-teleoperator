@@ -3,7 +3,7 @@ import os
 import sys
 import unittest
 from unittest.mock import patch
-from hermes_teleoperator.transport import RpcProcess, ssh_argv, ssh_environment, TransportError
+from hermes_teleoperator.transport import RpcProcess, ssh_argv, ssh_environment, describe_ssh_failure, TransportError
 
 
 class SpyProcess:
@@ -60,7 +60,7 @@ class TransportTests(unittest.TestCase):
         self.assertIn('TELEOPERATOR_HOME=', cmd[-1])
         self.assertNotIn('python', cmd[-1])
         self.assertNotIn('hermes_teleoperator.companion', cmd[-1])
-        with self.assertRaisesRegex(ValueError, 'legacy'):
+        with self.assertRaisesRegex(ValueError, 'Legacy Python receiver'):
             ssh_argv({'host': 'workstation', 'python': '/old/python'})
 
     def test_close_allows_remote_cleanup_on_eof(self):
@@ -80,6 +80,19 @@ class TransportTests(unittest.TestCase):
             with self.assertRaisesRegex(TransportError, 'closed'):
                 peer.call('ping')
 
+    def test_stderr_after_dispatched_request_does_not_hide_unknown_outcome(self):
+        code = '''import sys
+sys.stdin.readline()
+sys.stderr.write("ssh: connect to host host port 22: Connection timed out\\n")
+sys.stderr.flush()
+'''
+        with RpcProcess([sys.executable, '-c', code]) as peer:
+            with self.assertRaises(TransportError) as caught:
+                peer.call('call', {'mutation': True})
+            self.assertRegex(str(caught.exception), r'(?i)outcome.*unknown')
+            self.assertIn('No answer from the host', str(caught.exception))
+            self.assertIn('not retried', str(caught.exception))
+
     def test_malformed_receiver_error_closes_connection(self):
         code = '''import json, sys
 request = json.loads(sys.stdin.readline())
@@ -87,7 +100,7 @@ print(json.dumps({"id": request["id"], "error": "not an error object"}), flush=T
 sys.stdin.read()
 '''
         with RpcProcess([sys.executable, '-c', code]) as peer:
-            with self.assertRaisesRegex(TransportError, 'Connection failed; outcome may be unknown'):
+            with self.assertRaisesRegex(TransportError, 'not retried'):
                 peer.call('ping')
             self.assertTrue(peer.closed)
 
@@ -128,3 +141,33 @@ class SshEnvironmentTests(unittest.TestCase):
                                'LC_CTYPE': 'C.UTF-8', 'GITHUB_TOKEN': 'secret'})
         self.assertEqual(env, {'PATH': '/usr/bin', 'HOME': '/home/alice',
                                'LC_CTYPE': 'C.UTF-8'})
+
+
+class SshFailureMessageTests(unittest.TestCase):
+    """Unreadable ssh stderr must reach the user as one actionable sentence."""
+
+    def test_unknown_host_key_names_the_host_and_the_fix(self):
+        message = describe_ssh_failure(
+            'No ED25519 host key is known for 127.0.0.1 and you have requested strict checking.\n'
+            'Host key verification failed.') or ''
+        self.assertEqual(message, 'Host key for 127.0.0.1 is not trusted. Connect once with ssh to trust it.')
+
+    def test_changed_host_key_asks_for_verification_not_trust(self):
+        message = describe_ssh_failure('@@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@@') or ''
+        self.assertEqual(message, 'Host key changed. Verify the fingerprint, then update known-hosts.')
+
+    def test_refused_connection_reports_the_port(self):
+        message = describe_ssh_failure('ssh: connect to host 10.0.0.5 port 2222: Connection refused') or ''
+        self.assertEqual(message, 'SSH refused on port 2222. Check that sshd is running.')
+
+    def test_unresolvable_host_drops_the_trailing_colon(self):
+        message = describe_ssh_failure('ssh: Could not resolve hostname nope.example: Name or service not known') or ''
+        self.assertEqual(message, 'Could not resolve nope.example. Check the machine address.')
+
+    def test_rejected_key_is_not_reported_as_a_retryable_mistake(self):
+        message = describe_ssh_failure('me@host: Permission denied (publickey,password).') or ''
+        self.assertEqual(message, 'SSH key rejected. Authorize this key on the remote host.')
+
+    def test_unrecognised_stderr_is_not_guessed_at(self):
+        self.assertIsNone(describe_ssh_failure('kex_exchange_identification: read: Connection reset by peer'))
+        self.assertIsNone(describe_ssh_failure(''))

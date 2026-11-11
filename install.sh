@@ -2,7 +2,7 @@
 # Standalone receiver install. No Python, Hermes, Bun or Rust toolchain on target.
 set -euo pipefail
 fail() { printf 'Installation failed: %s\n' "$*" >&2; exit 1; }
-version='v1.1.2'
+version='v1.2.0'
 pinned_version=$version
 binary=''
 digest=''
@@ -20,7 +20,7 @@ while (($#)); do
         --public-key-file) public_key_file=${2:?}; shift 2 ;;
         --teleoperator-home) config_home=${2:?}; shift 2 ;;
         --allow-root) allow_root=true; shift ;;
-        --help) printf '%s\n' 'Usage: bash install.sh [--version v1.1.2] [--public-key "ssh-ed25519 ..."] [--teleoperator-home /absolute/path] [--allow-root]' 'Release downloads are verified against SHA256 digests embedded in this script for the exact tag; SHA256SUMS is only cross-checked.' 'Offline: --binary /path/to/receiver --sha256 <trusted SHA256>'; exit ;;
+        --help) printf '%s\n' 'Usage: bash install.sh [--version v1.2.0] [--public-key "ssh-ed25519 ..."] [--teleoperator-home /absolute/path] [--allow-root]' 'Release downloads are verified against SHA256 digests embedded in this script for the exact tag; SHA256SUMS is only cross-checked.' 'Offline: --binary /path/to/receiver --sha256 <trusted SHA256>'; exit ;;
         *) fail "Unknown option: $1 (legacy --python/--hermes-home are no longer supported)" ;;
     esac
 done

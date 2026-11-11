@@ -30,7 +30,7 @@ def identity(kwargs):
     # Never infer identity from process-global environment in a shared gateway.
     key = kwargs.get('session_id') or kwargs.get('session_key') or kwargs.get('task_id')
     if not isinstance(key, str) or not key:
-        raise ValueError('No stable conversation identity; refusing ambiguous routing')
+        raise ValueError('No stable conversation identity. Refusing to route.')
     return key
 
 
@@ -75,7 +75,7 @@ def register(ctx):
                     allow_local_delete=settings.get('allow_local_delete') is True)
                 controllers['path'] = path
             elif controllers['path'] != path:
-                raise ValueError('Profile changed; refusing ambiguous configuration')
+                raise ValueError('Profile changed. Refusing to save.')
             return controllers['value']
 
     def handle(args, **kwargs):
@@ -94,7 +94,7 @@ def register(ctx):
             elif action == 'transfer':
                 result = c.transfer(key, args['source_machine'], args['source'], args['destination_machine'],
                                     args['destination'], args.get('move', False))
-            else: raise ValueError('Unknown action')
+            else: raise ValueError('Unknown action.')
             return json.dumps(result)
         except Exception as exc:
             return json.dumps({'error': str(exc), 'teleoperator': {'fallback': False}})
@@ -137,7 +137,7 @@ def register(ctx):
             path = config_path()
             profile = session_profile()
             if profile and profile_for_home(path.parent) != profile:
-                raise ValueError('Focused conversation belongs to a different profile; refusing ambiguous configuration')
+                raise ValueError('This conversation belongs to a different profile. Refusing to save.')
             c = controller()
             add_machine(controllers['path'], raw_args, c)
             return json.dumps(c.status(key))

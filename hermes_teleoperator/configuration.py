@@ -77,28 +77,28 @@ def valid_host(host):
 def validate_machine(raw):
     value = parse_json(raw)
     if not isinstance(value, dict) or set(value) - _FIELDS:
-        raise ValueError('Expected a machine object with only supported fields')
+        raise ValueError('Expected a machine object with only supported fields.')
     name, host = value.get('name'), value.get('host')
     if not isinstance(name, str) or not _NAME.fullmatch(name) or name.lower() in {'local', 'back', 'status', 'switch', 'reconnect', 'disconnect'}:
-        raise ValueError('Invalid or reserved machine name')
+        raise ValueError('Invalid or reserved machine name.')
     if not valid_host(host):
-        raise ValueError('Invalid SSH host or alias')
+        raise ValueError('Invalid SSH host or alias.')
     if 'port' in value and (type(value['port']) is not int or not 1 <= value['port'] <= 65535):
-        raise ValueError('Invalid SSH port')
+        raise ValueError('Invalid SSH port.')
     for key in ('executable', 'identity_file', 'known_hosts', 'teleoperator_home'):
         if key not in value:
             continue
         path = value[key]
         if (not isinstance(path, str) or not _PATH.fullmatch(path) or path.startswith('-')
                 or '..' in path.split('/') or path in {'.', '/'}):
-            raise ValueError(f'Unsafe {key} path')
+            raise ValueError(f'Unsafe {key} path.')
     return name, {key: val for key, val in value.items() if key != 'name'}
 
 
 def add_machine(path, raw, controller):
     name, target = validate_machine(raw)
     if fcntl is None or not hasattr(os, 'O_NOFOLLOW'):
-        raise ValueError('Manual setup requires secure file locking on this gateway')
+        raise ValueError('Manual setup requires secure file locking on this gateway.')
     path = Path(path)
     # A separate stable lock inode is required because the config inode is replaced.
     lock_fd = os.open(str(path) + '.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
@@ -124,10 +124,10 @@ def add_machine(path, raw, controller):
             if any(not isinstance(k, str) or k.lower() == 'local' for k in targets):
                 raise ValueError('Invalid or reserved configured machine')
             if any(k.lower() == name.lower() for k in targets) or any(k.lower() == name.lower() for k in controller.targets):
-                raise ValueError('Machine already exists')
+                raise ValueError('Machine already exists.')
             # Never mutate the meaning of an existing live connection on reload.
             if any(targets.get(k) != v for k, v in controller.targets.items()):
-                raise ValueError('Existing machine configuration changed; restart before adding')
+                raise ValueError('Machine configuration changed. Restart before adding.')
             targets[name] = target
             fd, temp = tempfile.mkstemp(prefix='.' + path.name + '.', dir=path.parent)
             try:

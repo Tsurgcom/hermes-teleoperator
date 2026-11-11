@@ -140,7 +140,7 @@ class RoutingGuardTests(unittest.TestCase):
         cases = [
             ('write_file', {'path': '/srv/app/main.py', 'content': 'x'}, 'write:/srv/app'),
             ('patch', {'path': '/srv/app/deep/mod.py'}, 'write:/srv/app/deep'),
-            ('skill_manage', {'action': 'create', 'name': 'deploy'}, 'skill:deploy'),
+            ('skill_manage', {'operations': [{'action': 'create', 'name': 'deploy'}]}, 'skills:["deploy"]'),
             ('mcp__gitea__create_issue', {'title': 'x'}, 'tool:mcp__gitea__create_issue'),
         ]
         for name, args, grain in cases:
@@ -151,6 +151,31 @@ class RoutingGuardTests(unittest.TestCase):
                 self.assertIn('alpha', gate.tools[0][1])
                 self.assertIn(grain, gate.tools[0][2])
         self.assertEqual(len([c for c in self.peer.calls if c[0] == 'tool']), 4)
+
+    def test_skill_operation_batches_have_distinct_approval_scopes(self):
+        keys = []
+        for names in (['alpha'], ['beta'], ['alpha', 'beta'], ['beta', 'alpha']):
+            gate = Gate()
+            self.route('skill_manage', {'operations': [
+                {'action': 'patch', 'name': name, 'old_string': 'a', 'new_string': 'b'}
+                for name in names]}, gate)
+            keys.append(gate.tools[0][2])
+        self.assertNotEqual(keys[0], keys[1])
+        self.assertNotEqual(keys[0], keys[2])
+        self.assertNotEqual(keys[1], keys[2])
+        self.assertEqual(keys[2], keys[3])
+
+    def test_skill_manage_with_unidentifiable_targets_is_refused(self):
+        for args in ({}, {'operations': []}, {'operations': [{}]},
+                     {'operations': [{'name': 'safe'}, {}]},
+                     {'operations': [{'name': 123}]},
+                     {'operations': 'not-an-array'}):
+            with self.subTest(args=args):
+                gate = Gate()
+                result = self.route('skill_manage', args, gate)
+                self.assertEqual(result['status'], 'blocked')
+                self.assertEqual(gate.tools, [])
+        self.assertEqual([c for c in self.peer.calls if c[0] == 'tool'], [])
 
     def test_denied_write_never_reaches_the_machine(self):
         gate = Gate(approved=False, verdict={'approved': False, 'message': 'BLOCKED: no human present'})
@@ -170,9 +195,20 @@ class RoutingGuardTests(unittest.TestCase):
     def test_reads_keep_local_parity_and_are_not_prompted(self):
         gate = Gate()
         self.route('read_file', {'path': '/srv/app/main.py'}, gate)
-        self.route('search_files', {'path': '/srv/app', 'pattern': 'TODO'}, gate)
+        self.route('search_files', {'path': '/srv/app', 'pattern': '*.py', 'target': 'files'}, gate)
         self.assertEqual(gate.commands, [])
         self.assertEqual(gate.tools, [])
+
+    def test_content_search_cannot_recurse_into_credentials(self):
+        for args in ({'path': '/srv/app', 'pattern': 'secret'},
+                     {'pattern': 'secret'},
+                     {'path': '/srv/app', 'pattern': 'secret', 'target': 'content',
+                      'file_glob': '*.txt', 'output_mode': 'count'},
+                     {'path': '/srv/app', 'pattern': 'secret', 'target': 'unexpected'}):
+            with self.subTest(args=args):
+                result = self.route('search_files', args, Gate())
+                self.assertEqual(result.get('status'), 'blocked')
+        self.assertEqual([c for c in self.peer.calls if c[0] == 'tool'], [])
 
     def test_credential_reads_are_refused_remotely(self):
         for path in ('/home/u/.ssh/id_ed25519', '/srv/app/.env', '/srv/app/.env.local',
@@ -219,9 +255,8 @@ class RoutingGuardTests(unittest.TestCase):
 
 
 class TransferGuardTests(unittest.TestCase):
-    def test_transfer_keeps_working_without_a_gate(self):
-        """``transfer`` is an explicit plugin action on named paths, not a native
-        tool interception; it must keep its checksum and no-fallback contract."""
+    def test_transfer_requires_exactly_bound_human_approval(self):
+        """Approval includes source, destination and move before file effects."""
         peers = []
 
         def factory(target):
@@ -238,7 +273,17 @@ class TransferGuardTests(unittest.TestCase):
             controller.transfer_dir = tmp
             source, dest = Path(tmp) / 'in', Path(tmp) / 'out'
             source.write_bytes(b'payload')
-            result = controller.transfer('s', 'local', str(source), 'beta', str(dest))
+            with patch.dict(sys.modules, {'tools': None, 'tools.approval': None}):
+                blocked = controller.transfer('s', 'local', str(source), 'beta', str(dest))
+            self.assertEqual(blocked['status'], 'blocked')
+            self.assertFalse(dest.exists())
+            gate = Gate()
+            with patch.dict(sys.modules, fake_approval(gate)):
+                result = controller.transfer('s', 'local', str(source), 'beta', str(dest))
+            self.assertEqual(len(gate.tools), 1)
+            for value in (str(source), str(dest), 'local', 'beta', 'move'):
+                self.assertIn(value, gate.tools[0][1])
+                self.assertIn(value, gate.tools[0][2])
             self.assertEqual(dest.read_bytes(), b'payload')
             self.assertFalse(result['moved'])
 

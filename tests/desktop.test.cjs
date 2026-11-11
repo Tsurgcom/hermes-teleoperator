@@ -22,8 +22,8 @@ function render(status, request = async () => {}, options = {}) {
   box.setTimeout = options.setTimeout || setTimeout;
   box.clearTimeout = options.clearTimeout || clearTimeout;
   let index = 0;
-  const state = [status, options.error || '', false, true, null, options.spinning || false, options.adding || false, false];
-  box.useState = () => { const i = index++; return [state[i], value => { state[i] = value; options.onState?.(i, value); }]; };
+  const state = [status, options.error || '', false, true, null, options.adding || false, false];
+  box.useState = () => { const i = index++; return [state[i], value => { state[i] = typeof value === 'function' ? value(state[i]) : value; options.onState?.(i, state[i]); }]; };
   box.useRef = value => ({ current: value });
   box.jsx = box.jsxs = (type, props) => ({ type, props });
   for (const name of ['Button', 'Popover', 'PopoverContent', 'PopoverTrigger', 'Codicon']) box[name] = name;
@@ -48,14 +48,13 @@ test('error shows only Teleoperator in theme error color with accessible explana
   assert.match(chip.props['aria-label'], /unavailable/i);
 });
 
-test('refresh keeps the last error until the request finishes', async () => {
+test('opening the popover reloads status and keeps the last error until it finishes', async () => {
   let resolveRequest;
   const changes = [];
   const nodes = flatten(render(null, () => new Promise(resolve => { resolveRequest = resolve; }), {
-    error: 'unavailable', onState: (i, value) => changes.push([i, value]),
-    setTimeout: () => 1, clearTimeout: () => {}
+    error: 'unavailable', onState: (i, value) => changes.push([i, value])
   }));
-  nodes.find(x => x?.props?.['aria-label'] === 'Refresh').props.onClick();
+  nodes.find(x => x?.type === 'Popover').props.onOpenChange(true);
   await new Promise(resolve => setImmediate(resolve));
   assert.ok(!changes.some(([i]) => i === 1), 'error changed before completion');
   resolveRequest({ output: JSON.stringify({ active: 'local', configured: ['local'], connected: [] }) });
@@ -68,7 +67,7 @@ test('empty state has local and explains there are no other machines', () => {
   assert.ok(nodes.includes('Hermes Teleoperator'));
   assert.ok(nodes.some(x => typeof x === 'string' && /no other machines/i.test(x)));
   assert.ok(!nodes.includes('Back'));
-  assert.ok(nodes.some(x => x?.props?.['aria-label'] === 'Refresh'));
+  assert.ok(!nodes.some(x => x?.props?.['aria-label'] === 'Refresh'), 'status is reloaded on open; no manual refresh control');
 });
 test('connected machine renders disconnect and identity without legacy status rows', () => {
   const nodes = flatten(render({ active: 'work', configured: ['local', 'work'], connected: ['work'], previous: 'local', identity: { hostname: 'workstation' } }));
@@ -92,25 +91,6 @@ test('disconnect button targets the connected machine in the focused conversatio
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(calls[0][1].session_id, 's');
   assert.equal(calls[0][1].command, "/teleport disconnect 'work'");
-});
-
-test('refresh starts a full visible spin even when the request is fast', async () => {
-  const status = { active: 'local', configured: ['local'], connected: [] };
-  const changes = [], timers = [];
-  const nodes = flatten(render(status, async () => ({ output: JSON.stringify(status) }), {
-    onState: (i, value) => changes.push([i, value]),
-    setTimeout: (callback, ms) => { timers.push({ callback, ms }); return 1; }, clearTimeout: () => {}
-  }));
-  nodes.find(x => x?.props?.['aria-label'] === 'Refresh').props.onClick();
-  await Promise.resolve(); await Promise.resolve();
-  assert.ok(changes.some(([i, value]) => i === 5 && value === true));
-  assert.ok(timers.some(t => t.ms >= 650));
-  assert.ok(!changes.some(([i, value]) => i === 5 && value === false));
-  timers[0].callback();
-  assert.ok(changes.some(([i, value]) => i === 5 && value === false));
-  const spinningNodes = flatten(render(status, async () => {}, { spinning: true }));
-  const icon = spinningNodes.find(x => x?.type === 'Codicon' && x.props.name === 'refresh');
-  assert.match(icon.props.style.animation, /codicon-spin 0\.65s linear 1 forwards/);
 });
 
 test('SSH and port share a row and port defaults to 22', () => {
@@ -171,15 +151,26 @@ test('a busy conversation disables saving without claiming a save is in progress
   assert.ok(form);
   assert.equal(form.props.disabled, true);
   assert.equal(form.props.saving, false);
-  assert.ok(nodes.some(node => typeof node === 'string' && /wait.*conversation.*saving/i.test(node)));
-  assert.ok(!nodes.some(node => typeof node === 'string' && /switching is unavailable/i.test(node)), 'do not show unrelated switching warning in setup form');
+  assert.deepEqual(nodes.filter(node => node === 'Agent is running.'), ['Agent is running.'], 'one plain busy note, not a second warning');
 });
 
 test('add button opens manual form without sending a prompt', async () => {
   const changes = [];
   const nodes = flatten(render({ active: 'local', configured: ['local'], connected: [] }, async () => {}, { onState: (i, v) => changes.push([i, v]) }));
   await nodes.find(x => x?.props?.['aria-label'] === 'Add machine').props.onClick();
-  assert.ok(changes.some(([i, value]) => i === 6 && value === true));
+  assert.ok(changes.some(([i, value]) => i === 5 && value === true));
+});
+
+test('the header control closes the open form without touching other state', async () => {
+  const changes = [];
+  const nodes = flatten(render({ active: 'local', configured: ['local'], connected: [] }, async () => {}, { adding: true, error: 'connection lost', onState: (i, v) => changes.push([i, v]) }));
+  assert.ok(!nodes.some(x => x?.props?.['aria-label'] === 'Add machine'), 'the plus is replaced while the form is open');
+  const close = nodes.find(x => x?.props?.['aria-label'] === 'Close add machine');
+  assert.ok(close, 'the header control must close the form');
+  assert.equal(close.props.title, 'Close');
+  assert.equal(flatten(close).find(x => x?.type === 'Codicon').props.name, 'close');
+  close.props.onClick();
+  assert.deepEqual(changes, [[5, false]], 'closing only flips the form state');
 });
 
 test('save uses dedicated session-bound command with explicit fields', async () => {
@@ -235,7 +226,7 @@ test('ambiguous bot ownership fails closed without making a request', async () =
   const box = load(async () => { calls++; });
   box.host.state.focusedSessionOwner = { get: () => null };
   box.host.requestProfile = async () => { calls++; };
-  await assert.rejects(box.runCommand('s', 'status'), /owning gateway/);
+  await assert.rejects(box.runCommand('s', 'status'), /gateway/);
   assert.equal(calls, 0);
 });
 
@@ -271,7 +262,7 @@ test('focus change during route lookup prevents a command to the old session', a
   const pending = box.runCommand('old', 'switch', 'work');
   focused = 'new';
   releaseRoutes([{ connectionId: 'local', profile: 'default' }]);
-  await assert.rejects(pending, /focus changed/i);
+  await assert.rejects(pending, /conversation changed/i);
   assert.equal(requests, 0);
 });
 
@@ -286,7 +277,7 @@ test('owner change during route lookup prevents a command to the old gateway', a
   const pending = box.runCommand('s', 'switch', 'work');
   owner = { connectionId: 'other', profile: 'default' };
   releaseRoutes([{ connectionId: 'local', profile: 'default' }]);
-  await assert.rejects(pending, /focus changed/i);
+  await assert.rejects(pending, /conversation changed/i);
   assert.equal(requests, 0);
 });
 
@@ -300,9 +291,81 @@ test('error with retained status does not present the old machine as current in 
   assert.ok(nodes.some(node => node?.props?.role === 'alert' && node.props.children === 'connection lost'));
 });
 
+test('an uncertain machine action retains names without claiming stale status', async () => {
+  const status = { active: 'local', configured: ['local', 'work'], connected: ['work'] };
+  const changes = [];
+  const nodes = flatten(render(status, async () => { throw new Error('Connection lost'); }, { onState: (i, v) => changes.push([i, v]) }));
+  const row = nodes.find(node => node?.props?.role === 'listitem' && flatten(node).includes('work'));
+  row.props.children[0].props.onClick();
+  await new Promise(resolve => setImmediate(resolve));
+  const retained = changes.filter(([i]) => i === 0).at(-1)?.[1];
+  assert.ok(retained, 'retain the list');
+  const after = flatten(render(retained, async () => {}, { error: changes.filter(([i]) => i === 1).at(-1)?.[1] }));
+  assert.ok(after.includes('Local') && after.includes('work'));
+  assert.ok(!after.includes('Current') && !after.includes('Disconnect'));
+  assert.ok(after.filter(node => node?.props?.role === 'listitem').every(node => node.props.children[0].props.disabled));
+  assert.ok(after.some(node => typeof node === 'string' && /unknown/i.test(node)));
+});
+
+test('failed action refreshes status before showing the current machine', async () => {
+  const initial = { active: 'local', configured: ['local', 'work'], connected: [] };
+  const fresh = { active: 'work', configured: ['local', 'work'], connected: ['work'] };
+  const changes = [], calls = [];
+  const nodes = flatten(render(initial, async (_method, params) => {
+    calls.push(params.command);
+    if (calls.length === 1) throw new Error('Reply lost');
+    return { output: JSON.stringify(fresh) };
+  }, { onState: (i, v) => changes.push([i, v]) }));
+  nodes.find(node => node?.props?.role === 'listitem' && flatten(node).includes('work')).props.children[0].props.onClick();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls[1], '/teleport status');
+  assert.equal(changes.filter(([i]) => i === 0).at(-1)[1].active, 'work');
+});
+
+test('unknown location remains visible even if the error message is cleared', () => {
+  const nodes = flatten(render({ active: 'local', configured: ['local', 'work'], connected: [], unknown: true }));
+  assert.ok(nodes.some(node => typeof node === 'string' && /location.*unknown/i.test(node)));
+});
+
+test('a failed machine action keeps the list and reports the reason', async () => {
+  const status = { active: 'local', configured: ['local', 'work'], connected: [] };
+  const changes = [];
+  const nodes = flatten(render(status, async () => { throw new Error('Host key for work is not trusted yet.'); }, { onState: (i, v) => changes.push([i, v]) }));
+  const row = nodes.find(node => node?.props?.role === 'listitem' && flatten(node).includes('work'));
+  row.props.children[0].props.onClick();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(changes.some(([i, value]) => i === 0 && value?.configured?.includes('work')), 'the machine list must stay on screen');
+  assert.ok(changes.some(([i, value]) => i === 1 && /not trusted yet/.test(value)));
+});
+
+test('the reason is reported in the footer, never inside a machine row', () => {
+  const status = { active: 'local', configured: ['local', 'work'], connected: [] };
+  const nodes = flatten(render(status, async () => {}, { error: 'Host key for work is not trusted yet.' }));
+  const alerts = nodes.filter(node => node?.props?.role === 'alert');
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].props.children, 'Host key for work is not trusted yet.');
+  assert.equal(alerts[0].props.title, alerts[0].props.children);
+  const rows = nodes.filter(node => node?.props?.role === 'listitem');
+  assert.ok(rows.length && !rows.some(row => flatten(row).some(node => node?.props?.role === 'alert')), 'rows stay clean');
+});
+
+test('an error sits below the machine list and is shown in full', () => {
+  const status = { active: 'local', configured: ['local', 'work'], connected: [] };
+  const nodes = flatten(render(status, async () => {}, { error: 'Could not resolve work.example.' }));
+  const list = nodes.findIndex(node => node?.props?.role === 'list');
+  const alert = nodes.findIndex(node => node?.props?.role === 'alert');
+  assert.ok(list > -1 && alert > list, 'the alert must follow the machines, never push them out of view');
+  const node = nodes[alert];
+  assert.equal(node.props.style.whiteSpace, 'normal');
+  assert.equal(node.props.style.overflowWrap, 'anywhere');
+  assert.equal(node.props.style.minWidth, 0);
+  assert.equal(node.props.style.maxHeight, undefined, 'no clamp or scrollbar');
+  assert.equal(node.props.style.overflowY, undefined);
+});
+
 test('unsupported slash command provides actionable diagnostic', async () => {
   const box = load(async () => { throw new Error('unsupported_command'); });
-  await assert.rejects(box.runCommand('s', 'status'), /agent plugin.*enabled/);
+  await assert.rejects(box.runCommand('s', 'status'), /agent plugin is not available/i);
 });
 
 test('status reads the exact focused session and parses its actual response', async () => {

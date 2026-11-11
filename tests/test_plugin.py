@@ -125,6 +125,7 @@ class PluginTests(unittest.TestCase):
 
     def test_transfer_config_is_wired_and_moves_are_gated(self):
         from unittest.mock import patch
+        from hermes_teleoperator.guards import Decision
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             transfer = base / 'transfer'
@@ -132,6 +133,8 @@ class PluginTests(unittest.TestCase):
             config = base / 'teleoperator.json'
             config.write_text(json.dumps({'machines': {}, 'transfer_dir': str(transfer)}))
             with patch('hermes_teleoperator.plugin.config_path', return_value=config), \
+                 patch('hermes_teleoperator.guards.decide', return_value=__import__(
+                       'hermes_teleoperator.guards', fromlist=['Decision']).Decision(True)), \
                  patch('hermes_teleoperator.files._hermes_home',
                        return_value=Path('/nonexistent-test-hermes')), \
                  patch('hermes_teleoperator.files._gateway_home',
@@ -163,6 +166,8 @@ class PluginTests(unittest.TestCase):
             config.write_text(json.dumps({'machines': {}, 'transfer_dir': str(transfer),
                                           'allow_local_delete': True}))
             with patch('hermes_teleoperator.plugin.config_path', return_value=config), \
+                 patch('hermes_teleoperator.guards.decide', return_value=__import__(
+                       'hermes_teleoperator.guards', fromlist=['Decision']).Decision(True)), \
                  patch('hermes_teleoperator.files._hermes_home',
                        return_value=Path('/nonexistent-test-hermes')), \
                  patch('hermes_teleoperator.files._gateway_home',

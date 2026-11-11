@@ -40,15 +40,15 @@ class Controller:
 
     def _session(self, key):
         if not key:
-            raise ValueError('No conversation identity: refusing process-global machine selection')
+            raise ValueError('No conversation identity. Cannot choose a machine.')
         with self.lock:
             return self.sessions.setdefault(key, Session())
 
     def _peer(self, state, name):
         if name not in self.targets:
-            raise ValueError(f'Unconfigured machine: {name}')
+            raise ValueError(f'Unconfigured machine: {name}.')
         if name in state.disconnected:
-            raise RuntimeError('Disconnected; reconnect explicitly')
+            raise RuntimeError('Disconnected. Reconnect this machine.')
         peer = state.peers.get(name)
         if peer is None:
             peer = None
@@ -56,11 +56,11 @@ class Controller:
                 peer = self.factory(self.targets[name])
                 info = peer.call('ping')
                 if not isinstance(info, dict):
-                    raise ValueError('Invalid receiver identity: expected an object')
+                    raise ValueError('Invalid receiver identity. Expected an object.')
                 if info.get('protocol') != 2:
-                    raise ValueError('Incompatible receiver protocol; reinstall the matching receiver')
+                    raise ValueError('Receiver protocol mismatch. Redeploy the receiver.')
                 if info.get('version') != VERSION:
-                    raise ValueError(f'Receiver version mismatch: gateway {VERSION}, receiver {info.get("version")!r}; redeploy from this gateway before switching')
+                    raise ValueError(f'Receiver version mismatch: gateway {VERSION}, receiver {info.get("version")!r}. Redeploy the receiver.')
             except Exception:
                 # A factory that fails before returning a peer (bad config, unavailable
                 # executable) is a connection error too, not a raw ValueError/TypeError.
@@ -69,7 +69,7 @@ class Controller:
                 raise
             state.peers[name], state.identities[name] = peer, info
         if peer.closed:
-            raise RuntimeError('Connection closed; use reconnect. No local fallback.')
+            raise RuntimeError('Connection closed. Reconnect this machine.')
         return peer
 
     def status(self, key):
@@ -100,7 +100,7 @@ class Controller:
         with state.lock:
             name = name or state.active
             if name == 'local':
-                raise ValueError('Local has no connection')
+                raise ValueError('Local has no connection.')
             if name in state.peers:
                 state.peers.pop(name).close()
             state.disconnected.discard(name)
@@ -112,9 +112,9 @@ class Controller:
         with state.lock:
             name = name or state.active
             if name == 'local':
-                raise ValueError('Local has no connection')
+                raise ValueError('Local has no connection.')
             if name not in self.targets:
-                raise ValueError(f'Unconfigured machine: {name}')
+                raise ValueError(f'Unconfigured machine: {name}.')
             if name in state.peers:
                 state.peers.pop(name).close()
             state.disconnected.add(name)
@@ -125,15 +125,15 @@ class Controller:
         if method == 'tool':
             name = (params or {}).get('name', '')
             if name not in NATIVE_TOOLS and not name.startswith('mcp__'):
-                raise ValueError(f'Tool not exposed: {name}')
+                raise ValueError(f'Tool not exposed: {name}.')
         state = self._session(key)
         with state.lock:
             name = machine or state.active
             if name == 'local':
-                raise ValueError('This action needs a remote machine; native tools already work locally')
+                raise ValueError('This action needs a remote machine. Native tools already work locally.')
             # A disconnected entry cannot be silently recreated; explicit reconnect is required.
             if name not in state.peers and name == state.active:
-                raise RuntimeError('Disconnected; reconnect explicitly')
+                raise RuntimeError('Disconnected. Reconnect this machine.')
             peer = self._peer(state, name)
             result = peer.call(method, params)
             if isinstance(result, str):
@@ -182,7 +182,7 @@ class Controller:
             decision = self._decision(name, args, machine)
             if not decision.allowed:
                 return self._blocked(machine, decision)
-            return self.call(key, 'tool', {'name': name, 'arguments': args})
+            return self.call(key, 'tool', {'name': name, 'arguments': args}, machine)
         except Exception as exc:
             return {'error': str(exc), 'teleoperator': {'machine': machine, 'fallback': False}}
 
@@ -197,9 +197,9 @@ class Controller:
         with state.lock:
             target = machine or state.active
             if target == 'local':
-                raise ValueError('This action needs a remote machine; native tools already work locally')
+                raise ValueError('This action needs a remote machine. Native tools already work locally.')
             if name not in NATIVE_TOOLS and not name.startswith('mcp__'):
-                raise ValueError(f'Tool not exposed: {name}')
+                raise ValueError(f'Tool not exposed: {name}.')
         decision = self._decision(name, args, target)
         if not decision.allowed:
             return self._blocked(target, decision)
@@ -208,10 +208,22 @@ class Controller:
     def transfer(self, key, source_machine, source, destination_machine, destination, move=False):
         from .files import local_file_operation
         state = self._session(key)
+        if move and source_machine == 'local' and self.allow_local_delete is not True:
+            raise ValueError('Local moves are disabled. Set allow_local_delete in teleoperator.json.')
+        # One approval covers the complete operation, including disclosure of the
+        # source, destination write and optional deletion. Include exact endpoints
+        # in the gate's reason and rule key; approval must not generalize to a
+        # different path, machine or operation.
+        operation = {'source_machine': source_machine, 'source': source,
+                     'destination_machine': destination_machine, 'destination': destination,
+                     'move': bool(move)}
+        binding = json.dumps(operation, ensure_ascii=True, sort_keys=True, separators=(',', ':'))
+        decision = self._decision('mcp__teleoperator__transfer', operation, binding)
+        if not isinstance(decision, guards.Decision) or decision.allowed is not True:
+            if not isinstance(decision, guards.Decision):
+                decision = guards.Decision(False, 'Invalid approval verdict; transfer refused', 'failed-closed')
+            return self._blocked(destination_machine, decision)
         with state.lock:
-            if move and source_machine == 'local' and self.allow_local_delete is not True:
-                raise ValueError('Local moves are disabled; set allow_local_delete in teleoperator.json '
-                                 'to enable gateway-side deletion')
             def endpoint(machine, method, params):
                 if machine == 'local':
                     return local_file_operation(method, params, self.transfer_dir,
@@ -221,7 +233,7 @@ class Controller:
             result = endpoint(destination_machine, 'file_put', {
                 'path': destination, 'data': content['data'], 'sha256': content['sha256']})
             if result['sha256'] != content['sha256']:
-                raise ValueError('Destination checksum mismatch; source retained')
+                raise ValueError('Checksum mismatch. Source retained.')
             if move:
                 endpoint(source_machine, 'file_remove', {'path': source, 'sha256': content['sha256']})
             return {'source_machine': source_machine, 'source': source,

@@ -4,34 +4,34 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 
 async function requestForFocusedSession(sessionId, command) {
   const owner = host.state.focusedSessionOwner?.get()
-  if (!owner?.connectionId || !owner?.profile) throw new Error('Cannot identify this conversation’s owning gateway and profile.')
+  if (!owner?.connectionId || !owner?.profile) throw new Error('Cannot identify this conversation’s gateway.')
   const routes = await host.profileRoutes()
   const matches = routes.filter(route => route.connectionId === owner.connectionId && route.profile === owner.profile)
-  if (matches.length !== 1) throw new Error('Cannot uniquely identify this conversation’s gateway route.')
+  if (matches.length !== 1) throw new Error('This conversation’s gateway is ambiguous.')
   const current = host.state.focusedSessionOwner?.get()
-  if (!current || current.connectionId !== owner.connectionId || current.profile !== owner.profile || (host.state.focusedSessionId && host.state.focusedSessionId.get() !== sessionId)) throw new Error('Conversation focus changed; please retry.')
+  if (!current || current.connectionId !== owner.connectionId || current.profile !== owner.profile || (host.state.focusedSessionId && host.state.focusedSessionId.get() !== sessionId)) throw new Error('Conversation changed. Retry.')
   try {
     return await host.requestProfile(matches[0], 'slash.exec', { session_id: sessionId, command }, undefined, { spawnPriority: 'foreground' })
   } catch (err) {
-    if (String(err?.message || err).includes('unsupported_command')) throw new Error('Teleoperator command unavailable for this bot. Check that the agent plugin is enabled for this profile and restart its gateway.')
+    if (String(err?.message || err).includes('unsupported_command')) throw new Error('The agent plugin is not available for this profile. Enable it and restart the gateway.')
     throw err
   }
 }
 
 async function runCommand(sessionId, action, machine) {
   if (!sessionId) throw new Error('Open a conversation first.')
-  if (!['status', 'switch', 'back', 'disconnect', 'reconnect'].includes(action)) throw new Error('Unsupported action')
+  if (!['status', 'switch', 'back', 'disconnect', 'reconnect'].includes(action)) throw new Error('Unsupported action.')
   let command = '/teleport ' + (action === 'switch' ? '' : action)
   if (['switch', 'disconnect', 'reconnect'].includes(action)) {
-    if (typeof machine !== 'string' || !machine || /[\x00-\x1f\x7f]/.test(machine)) throw new Error('Invalid machine name')
-    if (action === 'switch' && ['status', 'back', 'disconnect', 'reconnect'].includes(machine)) throw new Error('Machine name is reserved by /teleport')
+    if (typeof machine !== 'string' || !machine || /[\x00-\x1f\x7f]/.test(machine)) throw new Error('Invalid machine name.')
+    if (action === 'switch' && ['status', 'back', 'disconnect', 'reconnect'].includes(machine)) throw new Error('Machine name is reserved by /teleport.')
     command += (action === 'switch' ? '' : ' ') + "'" + machine.replace(/'/g, "'\\''") + "'"
   }
   const response = await requestForFocusedSession(sessionId, command)
   let status
-  try { status = JSON.parse(response.output) } catch { throw new Error('Teleoperator command unavailable: ' + String(response?.output || 'empty response')) }
+  try { status = JSON.parse(response.output) } catch { throw new Error('Teleoperator did not answer: ' + String(response?.output || 'empty response')) }
   if (status?.error) throw new Error(status.error)
-  if (!status || typeof status.active !== 'string' || !Array.isArray(status.configured) || !Array.isArray(status.connected)) throw new Error('Invalid Teleoperator status response')
+  if (!status || typeof status.active !== 'string' || !Array.isArray(status.configured) || !Array.isArray(status.connected)) throw new Error('Unexpected status from the gateway.')
   return status
 }
 
@@ -44,9 +44,9 @@ async function saveMachine(sessionId, fields) {
   }
   const response = await requestForFocusedSession(sessionId, '/teleoperator-add ' + JSON.stringify(data))
   let result
-  try { result = JSON.parse(response.output) } catch { throw new Error('The gateway does not support manual setup yet. Update and restart the Teleoperator agent plugin.') }
+  try { result = JSON.parse(response.output) } catch { throw new Error('This gateway does not support manual setup. Update and restart the agent plugin.') }
   if (result?.error) throw new Error(result.error)
-  if (!result || !Array.isArray(result.configured) || typeof result.active !== 'string' || !Array.isArray(result.connected) || !result.configured.includes(fields.name)) throw new Error('Unexpected gateway response; verify the machine list before retrying.')
+  if (!result || !Array.isArray(result.configured) || typeof result.active !== 'string' || !Array.isArray(result.connected) || !result.configured.includes(fields.name)) throw new Error('Unexpected reply from the gateway. Verify the machine list.')
   return result
 }
 
@@ -93,16 +93,14 @@ function Companion({ sessionId, busy }) {
   const [pending, setPending] = useState(false)
   const [open, setOpen] = useState(false)
   const [reconnectMachine, setReconnectMachine] = useState(null)
-  const [refreshSpin, setRefreshSpin] = useState(false)
   const [adding, setAdding] = useState(false)
   const [saving, setSaving] = useState(false)
   const generation = useRef(0)
   const inFlight = useRef(false)
-  const spinTimer = useRef(null)
 
   async function act(action, machine) {
     if (inFlight.current || !sessionId || host.state.focusedSessionId.get() !== sessionId) return
-    if (action !== 'status' && host.state.busy.get()) return
+    if (action !== 'status' && (host.state.busy.get() || status?.unknown)) return
     inFlight.current = true
     const request = ++generation.current
     setPending(true)
@@ -112,9 +110,19 @@ function Companion({ sessionId, busy }) {
       if (generation.current === request) { setStatus(result); setError('') }
     } catch (err) {
       if (generation.current === request) {
-        if (action === 'switch' && /disconnected; reconnect explicitly/i.test(err.message)) setReconnectMachine(machine)
-        else setStatus(null)
+        // A missing or malformed reply cannot establish whether an action ran.
+        // Keep the machine names, but never present the old location as current.
+        setStatus(old => old ? { ...old, unknown: true } : null)
         setError(err.message)
+        if (action !== 'status') {
+          try {
+            const fresh = await runCommand(sessionId, 'status')
+            if (generation.current === request) {
+              setStatus(fresh)
+              if (action === 'switch' && /^disconnected\b/i.test(err.message)) setReconnectMachine(machine)
+            }
+          } catch { /* Keep names and unknown state until the next status read. */ }
+        }
       }
     } finally {
       if (generation.current === request) { inFlight.current = false; setPending(false) }
@@ -122,16 +130,8 @@ function Companion({ sessionId, busy }) {
   }
   useEffect(() => {
     if (sessionId) act('status')
-    return () => { generation.current++; inFlight.current = false; clearTimeout(spinTimer.current) }
+    return () => { generation.current++; inFlight.current = false }
   }, [sessionId])
-
-  function refresh() {
-    if (inFlight.current || !sessionId || host.state.focusedSessionId.get() !== sessionId) return
-    clearTimeout(spinTimer.current)
-    setRefreshSpin(true)
-    spinTimer.current = setTimeout(() => { spinTimer.current = null; setRefreshSpin(false) }, 750)
-    act('status')
-  }
 
   function addMachine() {
     if (sessionId && host.state.focusedSessionId.get() === sessionId) { setError(''); setAdding(true) }
@@ -153,14 +153,14 @@ function Companion({ sessionId, busy }) {
     }
   }
 
-  const label = !sessionId || error || !status ? 'Teleoperator' : 'Teleoperator · ' + status.active
+  const label = !sessionId || error || !status || status.unknown ? 'Teleoperator' : 'Teleoperator · ' + status.active
   const machines = status ? status.configured.filter(name => typeof name === 'string') : []
   const machineRow = name => {
-    const selected = status.active === name
-    const connected = name !== 'local' && status.connected.includes(name)
+    const selected = !status.unknown && status.active === name
+    const connected = !status.unknown && name !== 'local' && status.connected.includes(name)
     const offlineSelected = name !== 'local' && selected && !connected
     const hostname = selected && typeof status.identity?.hostname === 'string' ? status.identity.hostname : null
-    const unavailable = pending || busy
+    const unavailable = pending || busy || status.unknown
     return jsxs('div', {
       role: 'listitem',
       style: { border: connected ? '1px solid var(--ui-stroke-secondary)' : '1px solid transparent', borderRadius: '6px', padding: connected || offlineSelected ? '6px 8px' : '0 8px', display: 'grid', gap: '4px' },
@@ -187,23 +187,19 @@ function Companion({ sessionId, busy }) {
         jsxs('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' }, children: [
           jsx('strong', { children: 'Hermes Teleoperator' }),
           jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: '4px' }, children: [
-            jsx('button', { type: 'button', 'aria-label': 'Add machine', title: 'Add machine', disabled: !sessionId,
-              onClick: addMachine, style: { padding: '4px', display: 'inline-flex', color: 'var(--ui-text-tertiary)' },
-              children: jsx(Codicon, { name: 'add', size: '0.85rem' }) }),
-            jsx('button', { type: 'button', 'aria-label': 'Refresh', title: 'Refresh', disabled: !sessionId || pending || refreshSpin,
-              onClick: refresh, style: { padding: '4px', display: 'inline-flex', color: 'var(--ui-text-tertiary)' },
-              children: jsx(Codicon, { name: 'refresh', size: '0.85rem', style: { animation: refreshSpin ? 'codicon-spin 0.65s linear 1 forwards' : undefined } }) })
+            jsx('button', { type: 'button', 'aria-label': adding ? 'Close add machine' : 'Add machine', title: adding ? 'Close' : 'Add machine', disabled: !sessionId,
+              onClick: adding ? () => setAdding(false) : addMachine, style: { padding: '4px', display: 'inline-flex', color: 'var(--ui-text-tertiary)' },
+              children: jsx(Codicon, { name: adding ? 'close' : 'add', size: '0.85rem' }) })
           ] })
         ] }),
-        !sessionId ? jsx('div', { children: 'Open a conversation to inspect its location.' }) : null,
-        error ? jsx('div', { role: 'alert', children: error }) : null,
-        adding ? jsx(AddMachineForm, { disabled: pending || busy, saving, onSave: submitMachine, onCancel: () => { setAdding(false); setError('') } }) : null,
-        adding && busy && !saving ? jsx('div', { children: 'Wait until this conversation finishes before saving.' }) : null,
+        !sessionId ? jsx('div', { children: 'Open a conversation first.' }) : null,
+        adding ? jsx(AddMachineForm, { disabled: pending || busy, saving, onSave: submitMachine, onCancel: () => setAdding(false) }) : null,
         !adding && reconnectMachine ? jsx(Button, { size: 'sm', variant: 'secondary', disabled: pending || busy, onClick: () => act('reconnect', reconnectMachine), children: 'Reconnect ' + reconnectMachine }) : null,
-        busy && !adding ? jsx('div', { children: 'Switching is unavailable while this conversation is working.' }) : null,
         !adding && status ? jsx('div', { role: 'list', style: { display: 'grid', gap: '4px' }, children: machines.map(machineRow) }) : null,
         !adding && status && !machines.some(name => name !== 'local') ? jsx('div', { style: { color: 'var(--ui-text-tertiary)', padding: '2px 8px' }, children: 'No other machines configured.' }) : null,
-        jsx('small', { children: 'Remote failures never fall back to local.' })
+        status?.unknown ? jsx('div', { role: 'status', children: 'Location is unknown. Reopen this panel to check status.' }) : null,
+        busy && !saving ? jsx('div', { style: { color: 'var(--ui-text-tertiary)', padding: '2px 8px' }, children: 'Agent is running.' }) : null,
+        error ? jsx('div', { role: 'alert', title: error, style: { color: 'var(--ui-red)', fontSize: '11px', lineHeight: 1.35, whiteSpace: 'normal', overflowWrap: 'anywhere', minWidth: 0, padding: '2px 8px' }, children: error }) : null
       ]
     }) })
   ] })

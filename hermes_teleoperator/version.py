@@ -1,6 +1,6 @@
 """Gateway/receiver release identity; kept in sync with package manifests."""
 
-VERSION = '1.1.2'
+VERSION = '1.2.0'
 
 # Per-asset SHA256 for the exact release tag ``v{VERSION}``. This table is the
 # trust root for receiver downloads: deploy.py and install.sh verify downloaded

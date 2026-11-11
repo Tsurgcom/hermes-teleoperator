@@ -72,6 +72,19 @@ class ControllerTests(unittest.TestCase):
             c.switch('s', 'unconfigured')
         self.assertEqual(c.status('s')['active'], 'alpha')
 
+    def test_routed_approval_is_bound_to_original_machine_during_switch(self):
+        c = self.controller
+        c.switch('s', 'alpha')
+        def approve_after_switch(name, args, *, machine):
+            self.assertEqual(machine, 'alpha')
+            c.switch('s', 'beta')
+            return guards.Decision(True)
+        c.guard = approve_after_switch
+        result = c.route('s', 'write_file', {'path': '/tmp/x', 'content': 'x'},
+                         lambda _: self.fail('local fallback'))
+        self.assertEqual(result['teleoperator']['machine'], 'alpha')
+        self.assertEqual([x for x in self.peers[1].calls if x[0] == 'tool'], [])
+
     def test_remote_failure_never_calls_local_next(self):
         c = self.controller
         c.switch('s', 'alpha')
@@ -93,6 +106,29 @@ class ControllerTests(unittest.TestCase):
         c.switch('s', 'alpha')
         result = c.route('s', 'execute_code', {}, lambda _: self.fail('local execution'))
         self.assertIn('error', result)
+
+    def test_transfer_denial_precedes_all_file_effects(self):
+        c = self.controller
+        calls = []
+        def deny(name, args, *, machine):
+            calls.append((name, args, machine))
+            return guards.Decision(False, 'denied')
+        c.guard = deny
+        c.factory = lambda target: FilePeer(target['host'])
+        with tempfile.TemporaryDirectory() as tmp:
+            c.transfer_dir = tmp
+            c.allow_local_delete = True
+            for src_machine, dst_machine in [('local', 'beta'), ('alpha', 'local'),
+                                              ('alpha', 'beta'), ('local', 'local')]:
+                with self.subTest(src=src_machine, dst=dst_machine):
+                    source, dest = Path(tmp) / 'source', Path(tmp) / 'dest'
+                    source.write_bytes(b'private')
+                    result = c.transfer('s', src_machine, str(source), dst_machine, str(dest), move=True)
+                    self.assertEqual(result['status'], 'blocked')
+                    self.assertEqual(source.read_bytes(), b'private')
+                    self.assertFalse(dest.exists())
+            self.assertEqual(len(calls), 4)
+            self.assertEqual(c.status('s')['connected'], [])
 
     def test_transfer_copies_before_deleting_and_preserves_selection(self):
         c = self.controller
