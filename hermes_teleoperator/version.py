@@ -10,29 +10,29 @@ VERSION = '1.2.0'
 # build, then commit before tagging that release.
 RECEIVER_SHA256 = {
     'hermes-teleoperator-receiver-aarch64-apple-darwin':
-        '6ebdbc07ca7cc59c59c2cbeb59fc3ab5c0fe37e0f74e7750039b355f20e49ad5',
+        '6cb7f126fc9d08a5457b868534267c7cac1098ac0fcea50224e2db1948d9fa41',
     'hermes-teleoperator-receiver-aarch64-unknown-linux-gnu':
-        '486cb6589495af5c3ba05584deef6187da41f97e20fdcb6e95aeddd2211747f7',
+        'f4f298474b491a587c4be3e201318be8c23c12effb3baa3949b084b281c4e704',
     'hermes-teleoperator-receiver-aarch64-unknown-linux-musl':
-        '9d1546d1754d75017d40542018167b765407f5ecc7d2b2ecf7071414ace1ec82',
+        '1483f57d4e54410d6b13964a62d9563cee8efffc2b5d08dc0fe29f3643e2bfdd',
     'hermes-teleoperator-receiver-armv7-unknown-linux-gnueabihf':
-        '2a1d6c1e304a67d73c13a7762aee3b0bdc683a28595b88fcd9873bfaa10054fb',
+        '63ba98b87292f992b8ac2fca9b83494f5073bcc2234dd798da9d1338e8e914a6',
     'hermes-teleoperator-receiver-armv7-unknown-linux-musleabihf':
-        '130a39607f532e648471e3ae00ec8ca26972431aef71210f3b324065a44047ee',
+        '3230e864e7be4e1d938619d607953e1d02fa44a873c204af4a99149fb3cd3b38',
     'hermes-teleoperator-receiver-i686-unknown-linux-gnu':
-        'a94134bf3a017dae6a5a58a612d2cf8f4fdb99cf5c298d6c9a3ad5ef1e12dfc8',
+        '34b4d5297340adf95560797b9bb853efc09f1f4420cdcf3a1b4c6ac54606173b',
     'hermes-teleoperator-receiver-i686-unknown-linux-musl':
-        'ceb0e0c7154c97a6ad9de879d13f77f40c62eb3e6e845e91815f8de9b12f2100',
+        'b4f6b37aa8a6e5c547651db441346bb0a00aafa2f502f97b85db2321c5ea93b6',
     'hermes-teleoperator-receiver-powerpc64le-unknown-linux-gnu':
-        '2d0b155f09954f81a6706b4de80a0f97d97421239927b811f55138bd8d3c21fb',
+        'dbf82b36e5cad55bbd696a7e0086bfe66360e081ab737eaf6a7ec5ea3a888a9a',
     'hermes-teleoperator-receiver-riscv64gc-unknown-linux-musl':
-        '540c333c328aa81685fdef0a9d685cd9ee887a07152b92bbd8d41863fc743211',
+        'b8e9518acc40987ef998786652571189fb6ed84cbb718291962f519ddf5b696c',
     'hermes-teleoperator-receiver-s390x-unknown-linux-gnu':
-        '08dfd11de53e096ab088cc28da3b678cccf0cc64f8012040eee6ae398f761cc9',
+        '731b57110263d3b0e9a4db00108e2dec51bd315bdc79d8d1af9203499f6a16fd',
     'hermes-teleoperator-receiver-x86_64-apple-darwin':
-        'fcc3542810d5fb2fdfa63b891f67016500901214c79db0536bfba8c93401edc7',
+        '8f3180c6f3f03533c079e556d39531158a2a1c965fe0d8889fea25bb0c930e6a',
     'hermes-teleoperator-receiver-x86_64-unknown-linux-gnu':
-        'd1dbad5d26fd86ea91fa79c3f2327073a055737f3a26cadc4dcfa15719f8c359',
+        '7223d86340447fb7d378021a10e324c95db79ade2be87e4dce2f937cb1b34786',
     'hermes-teleoperator-receiver-x86_64-unknown-linux-musl':
-        'd639b8f89309f0c362aefbc26a311d0f305fe5ed9de0cc636e84c1367cc16861',
+        '2013038cc40dd0068a149a02bf53ba5240bfab9e6a086a9e62717136e6919110',
 }
