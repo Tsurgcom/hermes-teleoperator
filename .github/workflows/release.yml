@@ -166,7 +166,7 @@ jobs:
   # macOS needs a macOS linker and SDK, so it builds on a hosted arm64 runner.
   binary-apple:
     needs: test
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
       contents: read
       id-token: write
@@ -261,4 +261,4 @@ jobs:
 
             Assets are built on GitHub-hosted runners and carry build provenance attestations. Verify with `gh attestation verify <asset> --repo Tsurgcom/hermes-teleoperator`.
 
-            Built on GitHub-hosted Ubuntu 24.04 and macOS 14 runners. Only x86_64/aarch64 Linux plus native Rust tests are executed; other architectures are cross-compiled and the macOS binaries are built but not tested. Windows is not shipped: the receiver is Unix-only by design (openat/linkat/renameat file handling, Unix sockets, POSIX process groups, Bash).
+            Built on GitHub-hosted Ubuntu 24.04 and macOS 15 runners. Only x86_64/aarch64 Linux plus native Rust tests are executed; other architectures are cross-compiled and the macOS binaries are built but not tested. Windows is not shipped: the receiver is Unix-only by design (openat/linkat/renameat file handling, Unix sockets, POSIX process groups, Bash).

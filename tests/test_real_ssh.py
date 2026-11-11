@@ -213,7 +213,8 @@ for line in sys.stdin:
                 with Controller({'untrusted': wrong_target}) as c:
                     with self.assertRaises(TransportError) as failure:
                         c.switch('untrusted-session', 'untrusted')
-                    self.assertIn('Host key verification failed', str(failure.exception))
+                    self.assertIn('Host key changed', str(failure.exception))
+                    self.assertIn('Verify the fingerprint', str(failure.exception))
                     self.assertEqual(c.status('untrusted-session')['active'], 'local')
                 self.assertEqual(bad_known.read_bytes(), original_pin)
                 # Optional gateway-native middleware only; no Hermes interpreter

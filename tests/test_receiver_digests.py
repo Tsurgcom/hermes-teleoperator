@@ -44,7 +44,7 @@ class PinnedDigestTests(unittest.TestCase):
                 self.assertNotIn('self-hosted', block)
                 self.assertIn('actions/attest-build-provenance@', block)
         self.assertIn('runs-on: ubuntu-24.04', job_block(text, 'binary-linux'))
-        self.assertIn('runs-on: macos-14', job_block(text, 'binary-apple'))
+        self.assertIn('runs-on: macos-15', job_block(text, 'binary-apple'))
         self.assertIn('attestations: write', job_block(text, 'publish'))
         self.assertIn('id-token: write', job_block(text, 'publish'))
         self.assertIn('scripts/verify_release_digests.py artifacts', job_block(text, 'publish'))

@@ -360,7 +360,7 @@ class ReleasePinTests(unittest.TestCase):
         self.manifest = self.root / 'SHA256SUMS'
         self.addCleanup(self.tmp.cleanup)
 
-    def run_install(self, *extra, script=ROOT / 'install.sh', env=None):
+    def run_install(self, *extra, script=ROOT / 'install.sh', env=None, allow_root=True):
         base = {**os.environ, 'HOME': str(self.home),
                 'PATH': f'{self.commands}:/usr/bin:/bin',
                 'FAKE_BINARY': str(self.binary), 'FAKE_MANIFEST': str(self.manifest),
@@ -368,7 +368,8 @@ class ReleasePinTests(unittest.TestCase):
         for key in ('SUDO_USER', 'HERMES_HOME', 'PYTHONPATH', 'TELEOPERATOR_HOME'):
             base.pop(key, None)
         base.update(env or {})
-        return subprocess.run(['bash', str(script), *extra], env=base,
+        root_option = ['--allow-root'] if allow_root else []
+        return subprocess.run(['bash', str(script), *root_option, *extra], env=base,
                               capture_output=True, text=True, timeout=30)
 
     def write_payload(self, payload=b'#!/bin/sh\nprintf PINNED_OK\n', manifest_digest=None):
@@ -380,6 +381,14 @@ class ReleasePinTests(unittest.TestCase):
 
     def launcher(self):
         return self.home / '.local/bin/hermes-teleoperator-receiver'
+
+    @unittest.skipUnless(os.geteuid() == 0, 'root install guard requires root')
+    def test_root_install_requires_explicit_opt_in_before_download(self):
+        result = self.run_install(allow_root=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Root install requires --allow-root', result.stderr)
+        self.assertFalse(self.marker.exists())
+        self.assertFalse(self.launcher().exists())
 
     def test_release_install_rejects_tampered_binary_even_when_manifest_matches(self):
         tampered = b'tampered release bytes'
