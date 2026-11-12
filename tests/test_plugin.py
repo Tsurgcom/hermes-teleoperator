@@ -183,6 +183,6 @@ class PluginTests(unittest.TestCase):
                                              'source': str(source), 'destination_machine': 'local',
                                              'destination': str(destination), 'move': True},
                                             session_id='s'))
-                self.assertTrue(result['moved'])
-                self.assertFalse(source.exists())
-                self.assertEqual(destination.read_bytes(), b'move me')
+                self.assertIn('unavailable', result['error'])
+                self.assertEqual(source.read_bytes(), b'move me')
+                self.assertFalse(destination.exists())

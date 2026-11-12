@@ -69,64 +69,83 @@ class StandaloneReceiverTests(unittest.TestCase):
                 self.assertFalse(function['parameters']['additionalProperties'])
                 self.assertIn(name, json.dumps(self.rpc.call('search', {'query': name})))
 
-    def test_text_write_read_patch_and_regex_search(self):
+    def test_text_read_search_and_writes_are_refused_without_side_effects(self):
         path = self.home / 'notes.txt'
-        result = self.tool('write_file', path=str(path), content='first\nneedle one\nlast\n')
-        self.assertTrue(result['verified'])
+        original = 'first\nneedle one\nlast\n'
+        path.write_text(original)
+        missing = self.home / 'missing' / 'new.txt'
+        for name, args in [
+            ('write_file', {'path': str(path), 'content': 'changed'}),
+            ('write_file', {'path': str(missing), 'content': 'new'}),
+            ('patch', {'path': str(path), 'old_string': 'needle one', 'new_string': 'changed'}),
+            ('patch', {'path': str(path), 'old_string': 'needle', 'new_string': 'changed', 'replace_all': True}),
+        ]:
+            with self.subTest(name=name, args=args):
+                with self.assertRaisesRegex(TransportError, 'Remote text writes and patches are unavailable'):
+                    self.tool(name, **args)
+                self.assertEqual(path.read_text(), original)
+                self.assertFalse(missing.parent.exists())
+                self.assertEqual(set(self.home.iterdir()), {path})
         read = self.tool('read_file', path=str(path), offset=2, limit=1)
         self.assertEqual(read['content'], '2|needle one')
         self.assertEqual(read['total_lines'], 3)
-        self.tool('patch', path=str(path), old_string='needle one', new_string='needle two')
-        self.assertEqual(path.read_text(), 'first\nneedle two\nlast\n')
         found = self.tool('search_files', path=str(self.home), pattern='needle (one|two)',
                           file_glob='*.txt', context=1)
         self.assertEqual(found['total_count'], 1)
         self.assertEqual(found['matches'][0]['line'], 2)
-        self.assertEqual(found['matches'][0]['content'], 'needle two')
+        self.assertEqual(found['matches'][0]['content'], 'needle one')
         names = self.tool('search_files', path=str(self.home), pattern='*.txt', target='files')
         self.assertEqual(names['files'], [str(path)])
 
-    def test_ambiguous_patch_symlink_and_unknown_arguments_fail_without_mutation(self):
+    def test_patch_symlink_and_unknown_arguments_fail_without_mutation(self):
         path = self.home / 'repeated.txt'
         path.write_text('same same')
-        with self.assertRaises(TransportError):
-            self.tool('patch', path=str(path), old_string='same', new_string='changed')
-        self.assertEqual(path.read_text(), 'same same')
-        self.tool('patch', path=str(path), old_string='same', new_string='changed', replace_all=True)
-        self.assertEqual(path.read_text(), 'changed changed')
+        for replace_all in (False, True):
+            with self.assertRaises(TransportError):
+                self.tool('patch', path=str(path), old_string='same', new_string='changed',
+                          replace_all=replace_all)
+            self.assertEqual(path.read_text(), 'same same')
         link = self.home / 'link.txt'
         link.symlink_to(path)
         with self.assertRaises(TransportError):
             self.tool('write_file', path=str(link), content='must not write')
-        self.assertEqual(path.read_text(), 'changed changed')
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(path.read_text(), 'same same')
         with self.assertRaises(TransportError):
             self.tool('read_file', path=str(path), invented_option=True)
         self.assertEqual(self.rpc.call('ping')['protocol'], 2)
 
-    def test_skill_create_patch_list_and_view_are_config_home_scoped(self):
+    def test_skill_mutations_refused_but_list_and_view_remain_available(self):
         content = ('---\nname: fixture-skill\ndescription: Integration fixture.\n---\n'
                    '# Fixture\nORIGINAL_MARKER\n')
-        self.tool('skill_manage', operations=[{'action': 'create', 'name': 'fixture-skill',
-                                               'content': content}])
         skill = self.config / 'skills/fixture-skill/SKILL.md'
-        self.assertEqual(skill.read_text(), content)
+        support = skill.parent / 'references/details.md'
+        support.parent.mkdir(parents=True)
+        skill.write_text(content)
+        support.write_text('SUPPORTING_FILE')
         self.assertIn('fixture-skill', json.dumps(self.tool('skills_list')))
         self.assertIn('ORIGINAL_MARKER', json.dumps(self.tool('skill_view', name='fixture-skill')))
-        self.tool('skill_manage', operations=[{'action': 'patch', 'name': 'fixture-skill',
-            'old_string': 'ORIGINAL_MARKER', 'new_string': 'PATCHED_MARKER'}])
-        self.assertIn('PATCHED_MARKER', skill.read_text())
-        self.assertNotIn('ORIGINAL_MARKER', skill.read_text())
-        self.tool('skill_manage', operations=[{'action': 'write_file', 'name': 'fixture-skill',
-            'file_path': 'references/details.md', 'file_content': 'SUPPORTING_FILE'}])
         self.assertIn('SUPPORTING_FILE', json.dumps(self.tool('skill_view', name='fixture-skill',
                                                              file_path='references/details.md')))
-        with self.assertRaises(TransportError):
-            self.tool('skill_manage', operations=[{'action': 'create', 'name': '../escape',
-                                                   'content': content}])
+        operations = [
+            {'action': 'create', 'name': 'new-skill', 'content': content},
+            {'action': 'create', 'name': '../escape', 'content': content},
+            {'action': 'patch', 'name': 'fixture-skill', 'old_string': 'ORIGINAL_MARKER', 'new_string': 'CHANGED'},
+            {'action': 'write_file', 'name': 'fixture-skill', 'file_path': 'references/new.md', 'file_content': 'new'},
+            {'action': 'remove_file', 'name': 'fixture-skill', 'file_path': 'references/details.md'},
+        ]
+        for operation in operations:
+            with self.subTest(operation=operation):
+                with self.assertRaises(TransportError):
+                    self.tool('skill_manage', operations=[operation])
+                self.assertEqual(skill.read_text(), content)
+                self.assertEqual(support.read_text(), 'SUPPORTING_FILE')
+                self.assertFalse((skill.parent / 'references/new.md').exists())
+                self.assertFalse((self.config / 'skills/new-skill').exists())
         self.assertFalse((self.config / 'escape').exists())
         self.assertFalse((self.home / 'skills').exists())
 
-    def test_binary_transfer_checksums_no_overwrite_and_guarded_delete(self):
+    def test_binary_transfer_checksums_no_overwrite_and_disabled_delete(self):
         payload = b'\x00standalone\xff\n' * 31
         digest = hashlib.sha256(payload).hexdigest()
         path = self.home / 'payload.bin'
@@ -138,15 +157,19 @@ class StandaloneReceiverTests(unittest.TestCase):
         self.assertEqual(fetched['size'], len(payload))
         with self.assertRaises(TransportError):
             self.rpc.call('file_put', arguments)
-        with self.assertRaises(TransportError):
-            self.rpc.call('file_remove', {'path': str(path), 'sha256': '0' * 64})
-        self.assertEqual(path.read_bytes(), payload)
-        self.rpc.call('file_remove', {'path': str(path), 'sha256': digest})
-        self.assertFalse(path.exists())
-        bad = {**arguments, 'sha256': '0' * 64}
+        before = set(self.home.iterdir())
+        for checksum in ('0' * 64, digest):
+            with self.subTest(checksum=checksum):
+                with self.assertRaisesRegex(TransportError, 'Conditional file removal is unavailable'):
+                    self.rpc.call('file_remove', {'path': str(path), 'sha256': checksum})
+                self.assertEqual(path.read_bytes(), payload)
+                self.assertEqual(set(self.home.iterdir()), before)
+        bad_path = self.home / 'bad.bin'
+        bad = {**arguments, 'path': str(bad_path), 'sha256': '0' * 64}
         with self.assertRaises(TransportError):
             self.rpc.call('file_put', bad)
-        self.assertFalse(path.exists())
+        self.assertFalse(bad_path.exists())
+        self.assertEqual(path.read_bytes(), payload)
 
     def test_shell_state_timeout_kills_descendants_and_recovers(self):
         directory = self.home / 'work'
@@ -222,6 +245,7 @@ class StandaloneReceiverTests(unittest.TestCase):
         for directory in ('home/isolated', 'config', 'dev', 'usr/bin'):
             (jail / directory).mkdir(parents=True, exist_ok=True)
         (jail / 'dev/null').touch()
+        (jail / 'home/isolated/proof.txt').write_text('RUST_ONLY')
         self.assertFalse((jail / 'usr/bin/python3').exists())
         self.assertFalse(list(jail.rglob('model_tools*')))
         env = {'HOME': '/home/isolated', 'TELEOPERATOR_HOME': '/config', 'PATH': '/bin:/usr/bin'}
@@ -231,8 +255,9 @@ class StandaloneReceiverTests(unittest.TestCase):
                 'command': 'for tool in python python3 hermes; do if command -v "$tool"; then exit 91; fi; done; printf NO_HERMES_OR_PYTHON'}})
             self.assertEqual(result['exit_code'], 0, result)
             self.assertEqual(result['output'], 'NO_HERMES_OR_PYTHON')
-            rpc.call('tool', {'name': 'write_file', 'arguments': {
-                'path': '/home/isolated/proof.txt', 'content': 'RUST_ONLY'}})
+            with self.assertRaises(TransportError):
+                rpc.call('tool', {'name': 'write_file', 'arguments': {
+                    'path': '/home/isolated/proof.txt', 'content': 'CHANGED'}})
             read = rpc.call('tool', {'name': 'read_file', 'arguments': {'path': '/home/isolated/proof.txt'}})
             self.assertEqual(read['content'], '1|RUST_ONLY')
         self.assertEqual((jail / 'home/isolated/proof.txt').read_text(), 'RUST_ONLY')

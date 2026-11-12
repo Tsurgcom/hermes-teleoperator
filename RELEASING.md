@@ -101,9 +101,9 @@ marketplace catalog must pin the commit that contains this digest table, and the
 next release cut from this process must tag that same commit. Do not rewrite or
 move the existing `v1.1.2` tag.
 
-`VERSION` is `1.2.1`, but `RECEIVER_PINS_VERSION` is still `1.2.0`. Those
+`VERSION` is `1.3.0`, but `RECEIVER_PINS_VERSION` is still `1.2.0`. Those
 digests attest the v1.2.0 binaries, not this tree. `deploy.py` and
-`scripts/verify_release_digests.py` refuse to deploy or publish until a v1.2.1
+`scripts/verify_release_digests.py` refuse to deploy or publish until a v1.3.0
 candidate build is pinned with `sync_receiver_digests.py --from-sums`. Do not
-tag `v1.2.1` before that. `--from-sums` also sets `RECEIVER_PINS_VERSION` to
+tag `v1.3.0` before that. `--from-sums` also sets `RECEIVER_PINS_VERSION` to
 the package version.

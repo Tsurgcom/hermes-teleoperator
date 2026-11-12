@@ -1,4 +1,4 @@
-use crate::{files::{args,path,text,write_text},text_tools::{all_files,read_string,boolean}};
+use crate::{files::{args,path,text},text_tools::{all_files,read_string,boolean}};
 use serde_json::{json,Value};
 use std::{collections::BTreeMap,fs,path::{Component,Path,PathBuf}};
 pub fn home()->PathBuf{if let Some(h)=std::env::var_os("TELEOPERATOR_HOME"){let p=PathBuf::from(h);if p.is_absolute(){p}else{std::env::current_dir().unwrap_or_default().join(p)}}else{PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".teleoperator")}}
@@ -31,6 +31,32 @@ fn manage(v:&Value)->Result<Value,String>{args(v,&["operations"])?;let ops=v.get
  "create"=>{args(op,&["action","name","content","category"])?;if base.exists()||created.iter().any(|(existing,_)|existing==&key){return Err("Skill already exists".into());}let content=text(op,"content")?;if !content.starts_with("---\n")||!content.contains("\ndescription:"){return Err("SKILL.md requires YAML frontmatter with description".into());}staged.insert(file,Some(content.into()));created.push((key,base));},
  "patch"=>{args(op,&["action","name","old_string","new_string","replace_all","file_path"])?;let old=text(op,"old_string")?;let new=text(op,"new_string")?;if old.is_empty()||old==new{return Err("old_string must be nonempty and differ from new_string".into());}let content=match staged.get(&file){Some(Some(s))=>s.clone(),Some(None)=>return Err("File has been removed".into()),None=>read_string(&file)?};let count=content.matches(old).count();if count==0||count>1&&!boolean(op,"replace_all")?{return Err(format!("Expected unique match; found {count}"));}staged.insert(file,Some(content.replace(old,new)));},
  "write_file"=>{args(op,&["action","name","file_path","file_content"])?;if !op.get("file_path").is_some(){return Err("file_path is required".into());}staged.insert(file,Some(text(op,"file_content")?.into()));},
- "remove_file"=>{args(op,&["action","name","file_path"])?;if !op.get("file_path").is_some(){return Err("file_path is required".into());}if !file.exists()&&!staged.get(&file).map(|x|x.is_some()).unwrap_or(false){return Err("File does not exist".into());}staged.insert(file,None);},
+ "remove_file"=>{args(op,&["action","name","file_path"])?;if !op.get("file_path").is_some(){return Err("file_path is required".into());}return Err("Skill file removal is unavailable: safe conditional deletion is not supported".into());},
  _=>return Err(format!("Unsupported skill action: {action}; delete/full replacement are unavailable"))}}
- let mut backups=Vec::new();let mut made_dirs=Vec::new();let result=(||{for(p,content)in &staged{no_symlinks(p)?;let original=if p.exists(){Some(read_string(p)?)}else{None};backups.push((p.clone(),original));if let Some(content)=content{let mut missing=Vec::new();let mut d=p.parent().unwrap();while !d.exists(){missing.push(d.to_path_buf());d=d.parent().ok_or("Missing parent")?;}for d in missing.into_iter().rev(){fs::create_dir(&d).map_err(|e|e.to_string())?;made_dirs.push(d);}crate::files::replace(p,content)?;}else{fs::remove_file(p).map_err(|e|e.to_string())?;}}Ok::<(),String>(())})();if let Err(e)=result{for(p,old)in backups.into_iter().rev(){if let Some(s)=old{let _=write_text(&p,&s);}else{let _=fs::remove_file(&p);}}for d in made_dirs.into_iter().rev(){let _=fs::remove_dir(d);}return Err(e);}Ok(json!({"success":true,"operations":ops.len(),"files_modified":staged.keys().collect::<Vec<_>>()}))}
+ // Multiple distinct files cannot be atomically committed or safely rolled back.
+ if staged.len()>1{return Err("Multi-file skill batches are unavailable: atomic rollback cannot be guaranteed".into());}
+ let mut made_dirs=Vec::new();let result=(||{for(p,content)in &staged{no_symlinks(p)?;if let Some(content)=content{let mut missing=Vec::new();let mut d=p.parent().unwrap();while !d.exists(){missing.push(d.to_path_buf());d=d.parent().ok_or("Missing parent")?;}for d in missing.into_iter().rev(){fs::create_dir(&d).map_err(|e|e.to_string())?;made_dirs.push(d);}crate::files::replace(p,content)?;}else{fs::remove_file(p).map_err(|e|e.to_string())?;}}Ok::<(),String>(())})();if let Err(e)=result{for d in made_dirs.into_iter().rev(){let _=fs::remove_dir(d);}return Err(e);}Ok(json!({"success":true,"operations":ops.len(),"files_modified":staged.keys().collect::<Vec<_>>()}))}
+
+#[cfg(test)]
+mod tests {
+ use super::*;
+ use std::time::{Duration,SystemTime,UNIX_EPOCH};
+ #[test]
+ fn failed_replace_does_not_rewrite_original_inode() {
+  let root=std::env::temp_dir().join(format!("skill-failed-{}-{}",std::process::id(),SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+  let dir=root.join("skills/test");fs::create_dir_all(&dir).unwrap();
+  let main=dir.join("SKILL.md");fs::write(&main,"---\ndescription: original\n").unwrap();
+  let old=UNIX_EPOCH+Duration::from_secs(1_000_000);
+  fs::File::open(&main).unwrap().set_times(fs::FileTimes::new().set_modified(old)).unwrap();
+  let before=fs::metadata(&main).unwrap().modified().unwrap();
+  let previous=std::env::var_os("TELEOPERATOR_HOME");std::env::set_var("TELEOPERATOR_HOME",&root);
+  let result=manage(&json!({"operations":[{"action":"patch","name":"test","old_string":"original","new_string":"x".repeat(crate::files::MAX_FILE+1)}]}));
+  let batch=manage(&json!({"operations":[{"action":"patch","name":"test","old_string":"original","new_string":"changed"},{"action":"write_file","name":"test","file_path":"references/new.txt","file_content":"new"}]}));
+  if let Some(value)=previous{std::env::set_var("TELEOPERATOR_HOME",value)}else{std::env::remove_var("TELEOPERATOR_HOME")}
+  let after=fs::metadata(&main).unwrap().modified().unwrap();
+  assert!(result.is_err());assert_eq!(fs::read_to_string(&main).unwrap(),"---\ndescription: original\n");
+  assert!(batch.unwrap_err().contains("Multi-file skill batches"));assert!(!dir.join("references").exists());
+  fs::remove_dir_all(root).unwrap();
+  assert_eq!(before,after,"failed replacement rewrote the original inode");
+ }
+}

@@ -130,7 +130,7 @@ class ControllerTests(unittest.TestCase):
             self.assertEqual(len(calls), 4)
             self.assertEqual(c.status('s')['connected'], [])
 
-    def test_transfer_copies_before_deleting_and_preserves_selection(self):
+    def test_unsupported_move_fails_before_destination_write(self):
         c = self.controller
         c.switch('s', 'alpha')
         c.factory = lambda target: FilePeer(target['host'])
@@ -139,10 +139,10 @@ class ControllerTests(unittest.TestCase):
             c.allow_local_delete = True
             source, dest = Path(tmp) / 'in', Path(tmp) / 'out'
             source.write_bytes(b'payload')
-            result = c.transfer('s', 'local', str(source), 'beta', str(dest), move=True)
-            self.assertTrue(result['moved'])
-            self.assertEqual(dest.read_bytes(), b'payload')
-            self.assertFalse(source.exists())
+            with self.assertRaisesRegex(OSError, 'unavailable'):
+                c.transfer('s', 'local', str(source), 'beta', str(dest), move=True)
+            self.assertFalse(dest.exists())
+            self.assertEqual(source.read_bytes(), b'payload')
             self.assertEqual(c.status('s')['active'], 'alpha')
 
     def test_local_transfer_requires_configured_transfer_dir(self):
@@ -172,10 +172,10 @@ class ControllerTests(unittest.TestCase):
             self.assertFalse(dest.exists())
             self.assertEqual(self.peers, [])
             c.allow_local_delete = True
-            result = c.transfer('s', 'local', str(source), 'beta', str(dest), move=True)
-            self.assertTrue(result['moved'])
-            self.assertFalse(source.exists())
-            self.assertEqual(dest.read_bytes(), b'payload')
+            with self.assertRaisesRegex(OSError, 'unavailable'):
+                c.transfer('s', 'local', str(source), 'beta', str(dest), move=True)
+            self.assertTrue(source.exists())
+            self.assertFalse(dest.exists())
 
     def test_move_to_local_does_not_need_gateway_delete_permission(self):
         c = self.controller
@@ -187,10 +187,10 @@ class ControllerTests(unittest.TestCase):
             c.allow_local_delete = False
             source, dest = Path(tmp) / 'remote-source', transfer / 'local-dest'
             source.write_bytes(b'payload')
-            result = c.transfer('s', 'beta', str(source), 'local', str(dest), move=True)
-            self.assertTrue(result['moved'])
-            self.assertFalse(source.exists())
-            self.assertEqual(dest.read_bytes(), b'payload')
+            with self.assertRaisesRegex(OSError, 'unavailable'):
+                c.transfer('s', 'beta', str(source), 'local', str(dest), move=True)
+            self.assertTrue(source.exists())
+            self.assertFalse(dest.exists())
             self.assertEqual(c.status('s')['active'], 'local')
 
     def test_local_destination_outside_transfer_dir_is_refused(self):
@@ -203,7 +203,7 @@ class ControllerTests(unittest.TestCase):
             source, dest = Path(tmp) / 'remote-source', Path(tmp) / 'outside'
             source.write_bytes(b'payload')
             with self.assertRaisesRegex(ValueError, 'outside'):
-                c.transfer('s', 'beta', str(source), 'local', str(dest), move=True)
+                c.transfer('s', 'beta', str(source), 'local', str(dest))
             self.assertTrue(source.exists())
             self.assertFalse(dest.exists())
 
@@ -215,9 +215,12 @@ class ControllerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             source, dest = Path(tmp) / 'source', Path(tmp) / 'dest'
             source.write_bytes(b'remote payload')
-            result = c.transfer('s', 'alpha', str(source), 'beta', str(dest), move=True)
-            self.assertTrue(result['moved'])
-            self.assertFalse(source.exists())
+            with self.assertRaisesRegex(OSError, 'unavailable'):
+                c.transfer('s', 'alpha', str(source), 'beta', str(dest), move=True)
+            self.assertTrue(source.exists())
+            self.assertFalse(dest.exists())
+            result = c.transfer('s', 'alpha', str(source), 'beta', str(dest))
+            self.assertFalse(result['moved'])
             self.assertEqual(dest.read_bytes(), b'remote payload')
 
     def test_disconnect_does_not_reconnect_on_transfer(self):

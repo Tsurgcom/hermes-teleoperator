@@ -1,8 +1,12 @@
 # Security and install validation
 
+**Historical validation record:** The results and version-specific statements below describe the earlier v1.1.2 security correction, not the current development tree. See README.md and RELEASING.md for current transfer limitations and release pin state.
+
+In the current development tree, receiver `write_file` and `patch` are unavailable for all paths, as are skill mutations requiring text creation or replacement. These restrictions are not covered by the historical verification results below. Receiver asset pins still correspond to `1.2.0`, not the current `1.3.0` development version; release downloads fail closed until matching assets are built and pinned.
+
 ## Changes
 
-- Gateway-local file transfers now require a configured `transfer_dir`; every resolved source/destination must stay inside it, `$HERMES_HOME` and `~/.ssh` are refused (including through symlinks), and deleting a gateway-local source with `move=true` requires `allow_local_delete: true`. Remote receiver endpoints and limits are unchanged.
+- At that revision, gateway-local file transfers required a configured `transfer_dir`; every resolved source/destination had to stay inside it and `$HERMES_HOME` and `~/.ssh` were refused. Current code rejects all `move=true` transfers, regardless of `allow_local_delete`. Gateway and receiver copy destinations fail closed when anonymous staging or unnamed inode linking is unsupported, including on macOS, rather than writing directly or reporting partial success. This current limitation is not part of the historical verification below.
 - Receiver downloads are verified against per-asset SHA256 digests committed in `hermes_teleoperator/version.py` (gateway) and embedded in `install.sh` (standalone installer) for the exact release tag. `SHA256SUMS` is still downloaded and cross-checked, but it is no longer the trust root, so a compromised release cannot rewrite both bytes and checksum and pass.
 - Release assets are built on GitHub-hosted runners and attested with `actions/attest-build-provenance`; the publish job refuses any asset that differs from the source pins and attests the published `SHA256SUMS`. `RELEASING.md` documents the catalog `sha:` / tag / digest relationship.
 - Both installers now leave SSH authorization state entirely untouched. Supplying a dedicated public key generates a restricted forced-command entry for explicit administrator review and installation; it does not authorize the key.

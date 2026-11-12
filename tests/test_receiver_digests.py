@@ -2,6 +2,7 @@
 import hashlib
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,40 @@ def job_block(text, name):
 
 
 class PinnedDigestTests(unittest.TestCase):
+    def test_candidate_generation_and_verification_in_isolated_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shutil.copytree(ROOT / 'hermes_teleoperator', root / 'hermes_teleoperator',
+                            ignore=shutil.ignore_patterns('__pycache__'))
+            shutil.copytree(ROOT / 'scripts', root / 'scripts')
+            shutil.copytree(ROOT / 'tests', root / 'tests',
+                            ignore=shutil.ignore_patterns('__pycache__'))
+            shutil.copytree(ROOT / '.github', root / '.github')
+            shutil.copy2(ROOT / 'install.sh', root / 'install.sh')
+            artifacts = root / 'artifacts'
+            artifacts.mkdir()
+            pins = {}
+            for asset in deploy.ASSETS:
+                data = f'candidate fixture {asset}'.encode()
+                (artifacts / asset).write_bytes(data)
+                pins[asset] = hashlib.sha256(data).hexdigest()
+            sums = artifacts / 'SHA256SUMS'
+            sums.write_text(''.join(f'{pins[a]}  {a}\n' for a in sorted(pins)))
+            def run(*args):
+                result = subprocess.run([sys.executable, *args], cwd=root,
+                                        capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            run('scripts/sync_receiver_digests.py', '--from-sums', str(sums))
+            run('scripts/sync_receiver_digests.py', '--check')
+            run('scripts/verify_release_digests.py', str(artifacts))
+            run('-m', 'unittest',
+                'tests.test_receiver_digests.PinnedDigestTests.test_release_verifier_rejects_a_mismatched_artifact',
+                'tests.test_receiver_digests.PinnedDigestTests.test_release_verifier_rejects_a_missing_artifact',
+                'tests.test_standalone_install.ReleasePinTests')
+            self.assertIn(f"pinned_version='v{VERSION}'", (root / 'install.sh').read_text())
+            self.assertIn(f"RECEIVER_PINS_VERSION = '{VERSION}'",
+                          (root / 'hermes_teleoperator/version.py').read_text())
+
     def test_every_release_asset_has_one_well_formed_digest(self):
         self.assertEqual(set(RECEIVER_SHA256), set(deploy.ASSETS))
         for asset, digest in RECEIVER_SHA256.items():
@@ -62,12 +97,6 @@ class PinnedDigestTests(unittest.TestCase):
             for asset in deploy.ASSETS:
                 (artifacts / asset).write_bytes(asset.encode())
             (artifacts / sorted(deploy.ASSETS)[0]).write_bytes(b'tampered')
-            result = subprocess.run(
-                [sys.executable, 'scripts/verify_release_digests.py', str(artifacts)],
-                cwd=ROOT, capture_output=True, text=True, timeout=30)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn('source pins attest v', result.stderr)
-            self.assertIn(f'v{VERSION}', result.stderr)
             import importlib.util
             spec = importlib.util.spec_from_file_location(
                 'verify_release_digests', ROOT / 'scripts/verify_release_digests.py')
@@ -78,13 +107,26 @@ class PinnedDigestTests(unittest.TestCase):
             self.assertTrue(any('do not match the source pins' in line for line in errors), errors)
 
     def test_release_verifier_rejects_a_missing_artifact(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            'verify_release_digests', ROOT / 'scripts/verify_release_digests.py')
+        verifier = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verifier)
         with tempfile.TemporaryDirectory() as tmp:
-            result = subprocess.run(
-                [sys.executable, 'scripts/verify_release_digests.py', tmp],
-                cwd=ROOT, capture_output=True, text=True, timeout=30)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('source pins attest', result.stderr)
-        self.assertIn('before tagging or publishing', result.stderr)
+            errors = verifier.check_artifacts(tmp, RECEIVER_SHA256)
+        self.assertIn('Release artifacts missing', errors[0])
+
+    def test_release_verifier_pin_version_gate(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            'verify_release_digests', ROOT / 'scripts/verify_release_digests.py')
+        verifier = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verifier)
+        verifier.VERSION = '9.9.9'
+        verifier.RECEIVER_PINS_VERSION = '9.9.8'
+        self.assertIn('source pins attest v9.9.8', verifier.pin_version_error())
+        verifier.RECEIVER_PINS_VERSION = '9.9.9'
+        self.assertIsNone(verifier.pin_version_error())
 
     @unittest.skipUnless(os.environ.get('TELEOPERATOR_VERIFY_PUBLISHED_RELEASE') == VERSION,
                          'opt-in: set TELEOPERATOR_VERIFY_PUBLISHED_RELEASE=<version> to check the live release')

@@ -35,12 +35,13 @@ def validate(pins):
     return pins
 
 
-def render_block(pins):
+def render_block(pins, pins_version):
     lines = [
         START,
         '# Generated from hermes_teleoperator/version.py by scripts/sync_receiver_digests.py.',
         '# Do not edit by hand. These digests are the trust root for release downloads;',
         '# SHA256SUMS is fetched only to detect a rewritten release.',
+        f"pinned_version='v{pins_version}'",
         'pinned_digest() {',
         '    case $1 in',
     ]
@@ -103,7 +104,7 @@ def main(argv=None):
             raise SystemExit(f'{VERSION_PY}: RECEIVER_SHA256 table not found')
         version_text = pattern.sub(lambda _: rendered, version_text, count=1)
 
-    block = render_block(pins)
+    block = render_block(pins, VERSION if args.from_sums else RECEIVER_PINS_VERSION)
     install_text = replace_block(install_text, block, INSTALL_SH)
 
     if args.check:

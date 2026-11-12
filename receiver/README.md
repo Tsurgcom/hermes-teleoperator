@@ -51,18 +51,24 @@ Methods: `ping`, `tool`, `search`, `describe`, `file_get`, `file_put`,
 | Tool | Behaviour |
 | --- | --- |
 | `read_file` | UTF-8 text with `N\|` line numbers, `offset` (1-indexed), `limit` ≤ 2000, 100 KB content cap, `truncated`/`next_offset`. A line that does not fit returns `next_byte`; pass it as `byte_offset` to read the rest of that line. NUL bytes or invalid UTF-8 return an error: no PDF/Office/image extraction. |
-| `write_file` | Creates or atomically replaces a regular UTF-8 file (≤ 8 MiB). Refuses symlinks and non-regular files. |
-| `patch` | Literal exact replacement; refuses zero or multiple matches unless `replace_all: true`; nothing written on failure. |
+| `write_file` | Unavailable for all paths, including new files: safe atomic replacement is not supported. |
+| `patch` | Unavailable: safe atomic replacement is not supported. |
 | `search_files` | Rust regex content search or `*`/`?` filename globs. `target`, `path`, `file_glob`, `limit` ≤ 1000, `offset`, `order=discovery`, `output_mode` (`content`/`files_only`/`count`), `context` ≤ 50. Skips binary files (reported under `skipped`), does not follow symlinks, bounded to 100k entries / 512 MiB / 100k matches. |
-| `terminal` | Persistent real `bash --noprofile --norc`. cwd and exported shell variables persist between calls on the connection. Exit status, cwd, and exports are sampled from the command; the command cannot substitute its own report. Unset variables stay unset. Commands run non-interactively with stdin from `/dev/null`. Foreground `workdir` is rejected before running the command: use an explicit `cd` in the command (which changes the persistent shell), or `background: true` with `workdir`. Background `workdir` is job-scoped; relative paths resolve against the receiver's cwd, not the persistent shell cwd. The background response reports the physical starting cwd, not later changes made by the command. `timeout` 1..=1800s (default 180) applies to foreground and background jobs. On expiry the process group is SIGKILLed: foreground expiry also resets the shell, and background expiry kills that job even if nobody polls it. Output is capped at 1 MiB per call with `truncated`. `background: true` starts a detached pipe job. `pty: true` is rejected (unsupported). |
-| `process` / `process_manage` | `list`, `status` (no output consumption), `poll`, `wait` (`timeout`), `kill` (whole process group), `write` (raw stdin), `submit` (stdin + newline). Jobs inherit the shell's exported environment and, unless `workdir` is specified, its cwd at start; they have piped stdin. A background job is killed when its `timeout` elapses. The gateway runs `write`/`submit` stdin through the dangerous-command gate and records the human allowlist entry for that exact payload. |
+| `terminal` | Each call starts a fresh non-interactive `bash --noprofile --norc`. After successful foreground state capture, the receiver tracks cwd and eligible exported variables for subsequent calls; unexported variables, functions and traps do not persist. Shell options are not tracked as shell state, although eligible exports can affect Bash startup. Only valid identifier names are tracked, excluding `_`, `PWD`, `OLDPWD`, `SHLVL`, `BASH_ENV`, `ENV`, `SHELLOPTS`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, and `DYLD_*`. Bash may create its own defaults; an unset `PATH` is explicitly kept unset. Foreground commands have stdin from `/dev/null`. A timeout or failure to capture state (for example, an early `exit`) leaves the previous tracked cwd and exports unchanged and returns `shell_reset: true`; a nonzero exit alone does not prevent capture. Foreground `workdir` is rejected before running the command: use an explicit `cd` to update tracked cwd, or `background: true` with `workdir`. Background `workdir` is job-scoped; relative paths resolve against the receiver's cwd, not the tracked cwd. The background response reports the physical starting cwd, not later changes made by the command; background changes do not update tracked state. `timeout` 1..=1800s (default 180) applies to foreground and background jobs. On expiry the process group is SIGKILLed; background expiry kills that job even if nobody polls it. Output is capped at 1 MiB per call with `truncated`. `background: true` starts a detached pipe job. `pty: true` is rejected (unsupported). |
+| `process` / `process_manage` | `list`, `status` (no output consumption), `poll`, `wait` (`timeout`), `kill` (whole process group), `write` (raw stdin), `submit` (stdin + newline). Jobs start with the tracked eligible exports and, unless `workdir` is specified, tracked cwd; they have piped stdin. A background job is killed when its `timeout` elapses. The gateway runs `write`/`submit` stdin through the dangerous-command gate and records the human allowlist entry for that exact payload. |
 | `skills_list` | Reads `$TELEOPERATOR_HOME/skills` plus `~/.hermes/skills` when it exists. Optional `category` prefix filter. No Hermes required. |
 | `skill_view` | `SKILL.md` or one supporting file under `references/`, `templates/`, `scripts/`, `assets/`; no symlinks. A leaf that matches more than one skill is an error; use `category/name`, or `./name` for the root skill. |
-| `skill_manage` | `{operations:[{action:"create"|"patch"|"write_file"|"remove_file",...}]}`. Only `$TELEOPERATOR_HOME/skills` is writable; `~/.hermes/skills` fallback is read-only. All operations are validated and staged first, then applied atomically with rollback on failure. `delete` and full replacement are unsupported. |
+| `skill_manage` | Mutations that require text creation or replacement are unavailable, including `create`, `patch` and `write_file` when the staged result is text. `remove_file` is also unavailable because safe conditional deletion is not supported; the `~/.hermes/skills` fallback is read-only. Batches targeting more than one distinct file are rejected. `delete` and full replacement are unsupported. |
 
 Binary transfer (`file_get`/`file_put`/`file_remove`) keeps the Python `files.py`
-protocol: base64 + SHA-256, 8 MiB limit, atomic no-overwrite publish, regular
-non-symlink files only, and checksum-guarded removal.
+protocol: base64 + SHA-256, 8 MiB limit and regular non-symlink files only.
+`file_put` publishes without overwriting only when anonymous staging and unnamed
+inode linking are supported; otherwise it fails closed. Gateway copy destinations
+have the same requirement; neither endpoint falls back to direct creation or
+reports partial success when it is unsupported. This currently excludes macOS
+destinations and some filesystems. `file_remove` always refuses because safe atomic
+conditional removal is unavailable; the gateway rejects moves before transfer
+I/O. macOS execution has not been tested.
 
 ## MCP
 
@@ -72,8 +78,8 @@ config, no MCP tools are exposed. The module owns its own tests.
 
 ## Process lifetime
 
-EOF on stdin drops the receiver, which kills the persistent shell's process
-group, every background job's process group, and lets `McpManager::close()`
+EOF on stdin drops the receiver, which kills every background job's process
+group and lets `McpManager::close()`
 reap MCP servers. No listener is opened.
 
 ## Deliberate limitations

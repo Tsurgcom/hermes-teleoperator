@@ -223,6 +223,11 @@ class Controller:
             if not isinstance(decision, guards.Decision):
                 decision = guards.Decision(False, 'Invalid approval verdict; transfer refused', 'failed-closed')
             return self._blocked(destination_machine, decision)
+        # No endpoint in the current protocol can promise atomic conditional
+        # deletion against a concurrent same-user replacement. Reject before
+        # reading or writing either endpoint, including older receivers.
+        if move:
+            raise OSError('Safe source deletion is unavailable; copy instead and remove manually')
         with state.lock:
             def endpoint(machine, method, params):
                 if machine == 'local':

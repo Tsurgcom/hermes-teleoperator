@@ -4,7 +4,7 @@ import hashlib
 import os
 from pathlib import Path
 import tempfile
-import threading
+
 import unittest
 from unittest.mock import patch
 
@@ -17,6 +17,84 @@ def _payload(data):
 
 
 class TransferTests(unittest.TestCase):
+    def test_simulated_macos_put_fails_before_destination_creation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dest = root / 'copy'
+            with patch('hermes_teleoperator.files.sys.platform', 'darwin'), \
+                 patch('hermes_teleoperator.files._O_TMPFILE', 0), \
+                 patch('hermes_teleoperator.files._LIBC', None), \
+                 patch('hermes_teleoperator.files._protected_roots', return_value=()), \
+                 patch('hermes_teleoperator.files._write_all') as write:
+                for dispatch in (lambda: file_operation('file_put', {'path': str(dest), **_payload(b'payload')}),
+                                 lambda: local_file_operation('file_put', {'path': str(dest), **_payload(b'payload')}, root)):
+                    with self.assertRaises(OSError) as raised:
+                        dispatch()
+                    self.assertEqual(raised.exception.errno, errno.EOPNOTSUPP)
+                    self.assertEqual(list(root.iterdir()), [])
+                write.assert_not_called()
+
+    def test_simulated_macos_put_preserves_existing_destination(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / 'copy'
+            dest.write_bytes(b'existing')
+            with patch('hermes_teleoperator.files.sys.platform', 'darwin'), \
+                 patch('hermes_teleoperator.files._O_TMPFILE', 0), \
+                 patch('hermes_teleoperator.files._LIBC', None):
+                with self.assertRaises(OSError):
+                    file_operation('file_put', {'path': str(dest), **_payload(b'new')})
+            self.assertEqual(dest.read_bytes(), b'existing')
+
+    def test_noreplace_does_not_fall_back_to_racy_rename(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'src').write_bytes(b'source')
+            fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                with patch('hermes_teleoperator.files._LIBC', None), \
+                     patch('hermes_teleoperator.files.os.rename') as rename:
+                    with self.assertRaises(OSError):
+                        files._rename_noreplace(fd, 'src', fd, 'dst')
+                    rename.assert_not_called()
+                self.assertEqual((root / 'src').read_bytes(), b'source')
+            finally:
+                os.close(fd)
+
+    def test_put_fails_without_unnamed_staging_without_touching_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dest = root / 'out'
+            with patch('hermes_teleoperator.files._open_unnamed',
+                       side_effect=OSError(errno.EOPNOTSUPP, 'no unnamed staging')):
+                with self.assertRaises(OSError):
+                    file_operation('file_put', {'path': str(dest), **_payload(b'payload')})
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_remove_never_unlinks_a_replacement_at_checked_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / 'source'
+            path.write_bytes(b'original')
+            original_unlink = os.unlink
+            swapped = []
+
+            def swap_before_unlink(name, *, dir_fd=None):
+                if name == 'data':
+                    swapped.append(True)
+                    original_unlink(name, dir_fd=dir_fd)
+                    fd = os.open(name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600, dir_fd=dir_fd)
+                    os.write(fd, b'replacement')
+                    os.close(fd)
+                return original_unlink(name, dir_fd=dir_fd)
+
+            with patch('hermes_teleoperator.files.os.unlink', side_effect=swap_before_unlink):
+                with self.assertRaises((ValueError, OSError)):
+                    file_operation('file_remove', {'path': str(path), **_payload(b'original')})
+            blobs = [p.read_bytes() for p in root.rglob('*') if p.is_file()]
+            self.assertIn(b'original', blobs)
+            if swapped:
+                self.assertIn(b'replacement', blobs)
+
     def test_binary_transfer_is_verified_exclusive_and_move_safe(self):
         with tempfile.TemporaryDirectory() as tmp:
             dispatch = file_operation
@@ -34,8 +112,9 @@ class TransferTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'changed'):
                 dispatch('file_remove', {'path': path, 'sha256': 'bad'})
             self.assertTrue(Path(path).exists())
-            dispatch('file_remove', {'path': path, 'sha256': digest})
-            self.assertFalse(Path(path).exists())
+            with self.assertRaisesRegex(OSError, 'unavailable'):
+                dispatch('file_remove', {'path': path, 'sha256': digest})
+            self.assertEqual(Path(path).read_bytes(), data)
 
     def test_corrupt_payload_leaves_no_file(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -100,9 +179,10 @@ class LocalTransferTests(unittest.TestCase):
             local_file_operation('file_remove', {'path': str(path), 'sha256': '0' * 64},
                                  self.root, allow_delete=True)
         self.assertTrue(path.exists())
-        local_file_operation('file_remove', {'path': str(path), 'sha256': digest},
-                             self.root, allow_delete=True)
-        self.assertFalse(path.exists())
+        with self.assertRaisesRegex(OSError, 'unavailable'):
+            local_file_operation('file_remove', {'path': str(path), 'sha256': digest},
+                                 self.root, allow_delete=True)
+        self.assertEqual(path.read_bytes(), data)
 
     def test_disabled_and_escaping_paths_are_refused(self):
         self.put(self.root / 'kept.bin')
@@ -192,13 +272,12 @@ class LocalTransferTests(unittest.TestCase):
     def test_failed_staging_create_keeps_the_existing_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with patch('hermes_teleoperator.files.time.time_ns', return_value=123), \
-                 patch('hermes_teleoperator.files._open_unnamed',
+            with patch('hermes_teleoperator.files._open_unnamed',
                        side_effect=OSError(errno.EOPNOTSUPP, 'no tmpfile')):
                 staging = root / f'.teleoperator-{os.getpid()}-123'
                 staging.write_bytes(b'keep')
                 dest = root / 'out.bin'
-                with self.assertRaises(FileExistsError):
+                with self.assertRaises(OSError):
                     file_operation('file_put', {'path': str(dest), **_payload(b'abc')})
                 self.assertEqual(staging.read_bytes(), b'keep')
                 self.assertFalse(dest.exists())
@@ -217,96 +296,17 @@ class LocalTransferTests(unittest.TestCase):
             finally:
                 os.close(dir_fd)
 
-    def test_replacing_the_aside_file_keeps_both_inodes(self):
+    def test_remove_does_not_attempt_seal_without_procfs_or_hold(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            path = root / 'move.bin'
-            original = b'original-bytes'
-            path.write_bytes(original)
-            digest = hashlib.sha256(original).hexdigest()
-            calls = {'n': 0}
-            real = files._read_fd
-
-            def read_fd(fd):
-                calls['n'] += 1
-                data, info = real(fd)
-                if calls['n'] == 2:
-                    for entry in root.iterdir():
-                        if entry.is_dir() and entry.name.startswith('.teleoperator-seal-'):
-                            (entry / 'evil').write_bytes(b'EVIL-BYTES')
-                            os.rename(entry / 'evil', entry / 'data')
-                    path.write_bytes(b'new-occupant')
-                return data, info
-
-            with patch('hermes_teleoperator.files._read_fd', side_effect=read_fd):
-                with self.assertRaisesRegex(ValueError, 'changed'):
-                    file_operation('file_remove', {'path': str(path), 'sha256': digest})
-            self.assertEqual(path.read_bytes(), b'new-occupant')
-            blobs = [entry.read_bytes() for entry in root.rglob('*') if entry.is_file()]
-            self.assertIn(b'EVIL-BYTES', blobs)
-            self.assertIn(original, blobs)
-
-    def test_refused_delete_does_not_overwrite_a_new_source_file(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            path = root / 'move.bin'
-            original = b'original-bytes'
-            path.write_bytes(original)
-            digest = hashlib.sha256(original).hexdigest()
-            calls = {'n': 0}
-            real = files._read_fd
-
-            def read_fd(fd):
-                calls['n'] += 1
-                data, info = real(fd)
-                if calls['n'] == 2:
-                    path.write_bytes(b'new-occupant')
-                    return b'tampered-contents', info
-                return data, info
-
-            with patch('hermes_teleoperator.files._read_fd', side_effect=read_fd):
-                with self.assertRaisesRegex(ValueError, 'changed'):
-                    file_operation('file_remove', {'path': str(path), 'sha256': digest})
-            self.assertEqual(path.read_bytes(), b'new-occupant')
-            kept = [p.read_bytes() for p in root.iterdir() if p.name.startswith('.teleoperator-kept-')]
-            self.assertEqual(kept, [original])
-            self.assertFalse(any(p.name.startswith('.teleoperator-seal-') for p in root.iterdir()))
-
-    def test_remove_does_not_delete_a_swapped_public_token(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            path = root / 'move.bin'
-            payload = b'x' * (256 * 1024)
-            path.write_bytes(payload)
-            digest = hashlib.sha256(payload).hexdigest()
-            planted = root / f'.teleoperator-rm-{os.getpid()}-planted'
-            planted.write_bytes(b'keep-me')
-            stop = False
-
-            def spin():
-                while not stop:
-                    for entry in list(root.iterdir()):
-                        if not entry.is_file() or '.teleoperator-rm-' not in entry.name or entry == planted:
-                            continue
-                        replacement = root / f'{entry.name}.replacement'
-                        try:
-                            replacement.write_bytes(b'REPLACED')
-                            os.rename(replacement, entry)
-                        except OSError:
-                            pass
-
-            thread = threading.Thread(target=spin, daemon=True)
-            thread.start()
-            try:
-                file_operation('file_remove', {'path': str(path), 'sha256': digest})
-            finally:
-                stop = True
-                thread.join(1)
-            self.assertFalse(path.exists())
-            self.assertEqual(planted.read_bytes(), b'keep-me')
-            for entry in root.iterdir():
-                if entry.is_file():
-                    self.assertNotEqual(entry.read_bytes(), b'REPLACED', entry.name)
+            path = root / 'source'
+            path.write_bytes(b'original')
+            with patch('hermes_teleoperator.files.os.mkdir', side_effect=AssertionError('unsafe seal')), \
+                 patch('hermes_teleoperator.files.os.link', side_effect=AssertionError('unsafe hold')):
+                with self.assertRaisesRegex(OSError, 'unavailable'):
+                    file_operation('file_remove', {'path': str(path), **_payload(b'original')})
+            self.assertEqual(path.read_bytes(), b'original')
+            self.assertEqual(list(root.iterdir()), [path])
 
     def test_fallback_publish_does_not_leave_mismatched_destination_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -327,7 +327,7 @@ class LocalTransferTests(unittest.TestCase):
                        side_effect=OSError(errno.EOPNOTSUPP, 'no tmpfile')), \
                  patch('hermes_teleoperator.files._link_inode', return_value=False), \
                  patch('hermes_teleoperator.files.os.link', swapping_link):
-                with self.assertRaisesRegex(ValueError, 'staged bytes|Published file'):
+                with self.assertRaises(OSError):
                     file_operation('file_put', {'path': str(dest), **_payload(b'good bytes')})
             self.assertFalse(dest.exists())
             self.assertNotIn(b'EVIL', [p.read_bytes() for p in root.iterdir() if p == dest])

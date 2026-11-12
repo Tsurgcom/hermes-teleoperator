@@ -1,6 +1,6 @@
 """Gateway/receiver release identity; kept in sync with package manifests."""
 
-VERSION = '1.2.1'
+VERSION = '1.3.0'
 
 # Digests below attest the receiver binaries of RECEIVER_PINS_VERSION, which is
 # not this tree while it differs from VERSION. Regenerate both with

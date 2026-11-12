@@ -1,7 +1,7 @@
 ---
 name: hermes-teleoperator
 description: Use when moving between hosts; route native tools safely.
-version: 1.2.1
+version: 1.3.0
 author: Hermes Teleoperator contributors
 license: MIT
 platforms: [linux]
@@ -17,7 +17,7 @@ Use one Hermes conversation across several computers. The conversation stays on 
 ## When to use
 
 - A task needs repeated commands, file edits and remote skills/MCPs on another computer.
-- You need to move between several computers without losing each one's shell state.
+- You need to move between computers while retaining each live connection's tracked working directory and eligible exports.
 - You need explicit machine identity on results and conversation-scoped destinations.
 
 ## When not to use
@@ -38,17 +38,18 @@ Remote MCP access requires explicit expose_mcp and mcp_servers entries in $TELEO
 
 1. Call `teleoperator(action="status")` to see configured machines and the current destination.
 2. Call `teleoperator(action="switch", machine="<configured-name>")`. Check the returned active machine and hostname before doing work.
-3. Use ordinary `terminal`, `read_file`, `write_file`, `patch` and `search_files`; they now run remotely. Call `skills_list` and `skill_view` to load that host's instructions rather than relying on the original local skill index.
+3. Use `terminal`, `read_file` and `search_files` remotely. Receiver `write_file` and `patch` are unavailable even for new files; skill mutations requiring text creation or replacement are also unavailable. Call `skills_list` and `skill_view` to load that host's instructions rather than relying on the original local skill index.
 4. Discover remote MCP tools with `teleoperator(action="search", query="<capability>")`, inspect with `action="describe", name="<returned-name>"`, then invoke with `action="call", name="<returned-name>", arguments={...}`.
 5. Use `action="back"` to return to the previous machine, or `action="switch", machine="local"` to return home. Confirm with status when unsure.
 
 Human shortcuts: `/teleport <machine>`, `/teleport local`, `/teleport back`, `/teleport status`, `/teleport disconnect`, `/teleport reconnect <machine>`.
 
-For a small file, use `action="transfer"` with explicit `source_machine`, `source`, `destination_machine`, `destination`, and `move=false`. Destinations must not exist; parent directories must exist. For a gateway-local endpoint, the path must resolve inside the configured `transfer_dir`; `$HERMES_HOME` and `~/.ssh` are refused. Moving a gateway-local source requires `allow_local_delete: true` in the gateway config. Use `move=true` only when source deletion is intended, and stop concurrent writers first.
+For a small file, use `action="transfer"` with explicit `source_machine`, `source`, `destination_machine`, `destination`, and `move=false`. Destinations must not exist; parent directories must exist. For a gateway-local endpoint, the path must resolve inside the configured `transfer_dir`; `$HERMES_HOME` and `~/.ssh` are refused. All `move=true` requests are rejected before transfer I/O, even with `allow_local_delete: true`; verify the copy before separately arranging deletion. Gateway and receiver copy destinations require anonymous staging and unnamed inode linking; they fail closed without either, including on macOS and unsupported filesystems, rather than writing directly or reporting partial success. macOS has not been tested. Receiver `write_file` and `patch` are unavailable for all paths, as are skill mutations requiring text creation or replacement. Skill `remove_file` is also unavailable because safe conditional deletion is not supported; batches targeting more than one distinct file are rejected.
 
 ## Install and recover over SSH
 
 - Prefer setup from the gateway's plugin Python environment: `python -m hermes_teleoperator.deploy user@host --probe`, then the same without `--probe` plus `--identity-file <admin-key>` and optional `--public-key-file <dedicated-key.pub>`. The helper probes the client's actual ABI/OS/libc, downloads the exact gateway-matching version onto the gateway, verifies the asset against a per-asset SHA256 committed in `hermes_teleoperator/version.py` for that tag, transfers over administrative SSH and installs offline. It validates a staged handshake before switching the launcher. No client downloads or runtimes. Gateway/receiver versions must match exactly; upgrade/reload the gateway, deploy, then reconnect. Never use latest or an architecture guess. The repository's target-side install.sh remains a Linux-only alternative. Pass only a dedicated gateway public key with `--public-key` or `--public-key-file`; never send the private key. The installer verifies a standalone release binary against a SHA256 embedded in `install.sh` for the exact tag and cross-checks the downloaded `SHA256SUMS`, then prints launcher/config paths. It requires Bash, curl/coreutils and optional ssh-keygen, not Hermes or a language runtime. Published checksums are not publisher signatures; use `--binary` with a trusted `--sha256` for independently verified bytes. Releases carry GitHub build-provenance attestations. Do not suggest a release install until that release has binaries.
+- Current development version `1.3.0` still has `1.2.0` receiver asset pins; release-download deployment fails closed until matching assets are built and pinned. See `RELEASING.md`; independently verified `--binary` plus `--sha256` is the target-side offline alternative.
 - Install as the intended SSH user, not via sudo. Check id -un, HOME and intended executable/config paths first. Direct root installation requires explicit intent and `--allow-root`; do not silently change user or reuse another user's profile. The installer rejects foreign-owned or group/other-writable installation ancestors; diagnose ownership and permissions rather than bypassing the guard.
 - Supplying a public key only generates a restricted forced-command authorization entry (deployment JSON: `ssh_authorization_entry`); neither installer reads or writes SSH authorization files. Have the destination administrator explicitly review and install the entry. Once authorized, the dedicated key is forced to the companion and cannot run normal SSH repair commands. Keep separate administrative SSH access. Host-key verification is still required.
 - There is no daemon/service to restart: `teleoperator(action="reconnect", machine="<name>")` starts a fresh companion over SSH. This resets its shell state; inspect ambiguous mutations before retrying.
@@ -60,7 +61,7 @@ For marketplace submission or re-pinning, load [catalog submission](references/c
 ## Pitfalls and verification
 
 - A failed/disconnected remote remains selected. Never retry a possibly executed mutation blindly; inspect the outcome, then explicitly reconnect or switch local. There is no local fallback.
-- Switching back preserves shell state only while the connection lives; reconnect creates a fresh shell. Identity cwd is a connection-time snapshot; terminal results show later changes.
+- Each terminal call starts a fresh non-interactive Bash. Successful foreground capture retains cwd and eligible exports on the live connection, not unexported variables, functions, traps or shell options. Capture failure or timeout leaves prior tracked state unchanged; reconnect resets it. Identity cwd is a connection-time snapshot; terminal results show later changes.
 - Browser tools, `execute_code`, cron and delegation are not teleported and are blocked while remote. Web search/extract and human clarification remain local. Switch local before using unsupported tools.
 - The initial prompt, memory and project instructions are not migrated. Read relevant remote instructions explicitly. The standalone receiver does not load Hermes plugins or auth stores. Every routed call is approved by Hermes first — dangerous-command gate for `terminal`, human-approval gate for writes, skill edits, state-changing process actions and `mcp__*` — and a refusal or an unreachable gate fails closed. It does not run other plugins' `pre_tool_call` hooks or the agent's tool guardrails (see hermes-agent#152963). SSH-user authority is not a sandbox; native Hermes feature parity is not implied. Inspect remote schemas; use ordinary SSH for unsupported options.
 - Check `teleoperator.machine` on remote results. After a switch, verify with a harmless `pwd`/`hostname` command if needed; after a transfer, check its checksum/size result. Finish on the machine the task requires and state where any deliverable lives.

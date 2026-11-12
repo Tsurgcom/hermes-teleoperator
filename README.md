@@ -26,7 +26,7 @@ Prompt me to restart the gateway when needed, and guide me through the rest of t
 
 ![Machine switching preserves live connections and fails closed](assets/switching.svg)
 
-`/teleport back` returns to the previous machine. `/teleport local` returns home. A failed remote call never silently becomes a local command. Switching back reuses shell state while the connection remains open; reconnect starts a fresh shell.
+`/teleport back` returns to the previous machine. `/teleport local` returns home. A failed remote call never silently becomes a local command. Switching back reuses the connection's tracked working directory and eligible exported variables while the connection remains open; reconnect starts with fresh state. Each terminal call runs a new Bash process, not a persistent shell.
 
 ## Requirements
 
@@ -34,7 +34,7 @@ Gateway: Hermes with documented plugin/tool-execution middleware, Python 3.11+, 
 
 Linux x86_64, aarch64, armv7, i686, riscv64, ppc64le or s390x, macOS 11+ on x86_64 or arm64, an OpenSSH server, Bash and the standalone binary. Installation uses Bash, curl, GNU coreutils and OpenSSH's ssh-keygen when generating a public-key authorization entry. No language toolchain is needed. Windows is not supported: the receiver is Unix-only by design (openat/linkat/renameat file handling, Unix sockets, POSIX process groups, Bash).
 
-Measured x86_64 musl release build on Linux 7.0.14, 2 vCPU: 2.3 MiB static binary, about 0.5 ms from spawn to first response, roughly 1.4 MiB RSS including its idle Bash shell after 20 commands. Those are `scripts/measure_receiver.py` results, not a comparison against Python/Bun, and exclude SSH and MCP server processes. The receiver exits at stdin EOF; it is not a resident daemon.
+Measured x86_64 musl release build on Linux 7.0.14, 2 vCPU: 2.3 MiB static binary, about 0.5 ms from spawn to first response, roughly 1.4 MiB RSS after 20 commands. Those are `scripts/measure_receiver.py` results, not a comparison against Python/Bun, and exclude SSH and MCP server processes. The receiver exits at stdin EOF; it is not a resident daemon.
 
 ## Release targets, libc and linkage
 
@@ -85,7 +85,9 @@ python -m hermes_teleoperator.deploy me@workstation \
   --public-key-file "$HOME/.ssh/teleoperator-workstation.pub"
 ```
 
-The helper probes the destination's actual userland ABI over strict SSH, downloads the exact gateway-matching release onto the gateway, verifies the asset against a per-asset SHA256 committed in `hermes_teleoperator/version.py` for that release tag, then transfers bytes over SSH for offline installation. It never selects `latest`, downloads on the client, or transfers a private key. `--version v1.2.1` is optional and must match the gateway exactly. `--port`, `--known-hosts` and `--teleoperator-home` are supported. Root requires `--allow-root`; sudo-derived identity is rejected. `SHA256SUMS` is fetched and cross-checked so a rewritten release is reported, but the source pin is the trust root; neither is an independent publisher signature.
+The helper probes the destination's actual userland ABI over strict SSH, downloads the exact gateway-matching release onto the gateway, verifies the asset against a per-asset SHA256 committed in `hermes_teleoperator/version.py` for that release tag, then transfers bytes over SSH for offline installation. It never selects `latest`, downloads on the client, or transfers a private key. `--version v1.3.0` is optional and must match the gateway exactly. `--port`, `--known-hosts` and `--teleoperator-home` are supported. Root requires `--allow-root`; sudo-derived identity is rejected. `SHA256SUMS` is fetched and cross-checked so a rewritten release is reported, but the source pin is the trust root; neither is an independent publisher signature.
+
+**Current development pin state:** gateway/receiver version `1.3.0` still has receiver asset pins for `1.2.0`. Release download deployment for `1.3.0` fails closed until matching candidate assets are built and pinned; do not assume an existing release contains these changes. See [RELEASING.md](RELEASING.md). The target-side installer can instead install independently verified bytes supplied with `--binary` and `--sha256`.
 
 Selection prefers static musl on supported Linux targets, falling back to glibc only for s390x and ppc64le with proven version floors. It checks ELF word size/endianness (including 32-bit userland on a 64-bit kernel), ARM hard-float, RISC-V ISA, CPU/kernel minimums, macOS version and Rosetta. Ambiguous or unsupported combinations fail rather than guessing. A staged receiver must pass an exact version/protocol/identity handshake before the live launcher switches atomically. Existing skills, config and unrelated SSH keys are preserved; a failed transfer or staged handshake leaves the live launcher unchanged. Old content-addressed binaries are retained for inspection, not automatically pruned. Disconnect live sessions before upgrading. SSH mutations are never automatically retried; inspect ambiguous failures before rerunning.
 
@@ -104,7 +106,7 @@ Release installation, after a release containing binaries has been published:
 ```sh
 REF=REVIEWED_FULL_COMMIT_SHA
 curl -fsSL "https://raw.githubusercontent.com/Tsurgcom/hermes-teleoperator/$REF/install.sh" |
-  bash -s -- --version v1.2.1 \
+  bash -s -- --version v1.3.0 \
     --public-key 'ssh-ed25519 AAAA... gateway-key'
 ```
 
@@ -153,7 +155,7 @@ Create `$HERMES_HOME/teleoperator.json`:
 
 Optional fields: `port`, `known_hosts`. Use absolute paths. `local` is reserved. Keys stay in SSH files or its agent, not this JSON. Settings are read lazily; reload/restart after changes.
 
-Gateway-local transfers are disabled until `transfer_dir` is set to an existing absolute directory. Every gateway-side source and destination path is resolved (including symlinks) and must stay inside that directory; paths inside `$HERMES_HOME` and `~/.ssh` are always refused. `allow_local_delete` defaults to `false`: moving a file *from* the gateway host is refused unless it is set to `true`. Remote receiver endpoints keep their existing behaviour and limits.
+Gateway-local transfers are disabled until `transfer_dir` is set to an existing absolute directory. Every gateway-side source and destination path is resolved (including symlinks) and must stay inside that directory; paths inside `$HERMES_HOME` and `~/.ssh` are always refused. `allow_local_delete` defaults to `false`, but enabling it does not enable moves: all moves are currently refused.
 
 ## Skills and MCP on the receiver
 
@@ -188,7 +190,7 @@ The receiver uses MCP initialize/tools-list/tools-call directly. It advertises n
 /teleport reconnect workstation
 ```
 
-Terminal, file and skill tool names follow the selected computer. The remote implementation is standalone, not the Hermes native dispatcher. Use `teleoperator(action="describe", name="terminal")` for the actual remote schema; unsupported options return errors rather than silently doing something else. Foreground terminal calls reject `workdir`: use an explicit `cd` in the command (which changes the persistent shell's cwd), or use `background: true` with `workdir`. Background relative workdirs resolve against the receiver's cwd, and the response reports the job's physical starting cwd.
+Terminal, file and skill tool names follow the selected computer. The remote implementation is standalone, not the Hermes native dispatcher. Use `teleoperator(action="describe", name="terminal")` for the actual remote schema; unsupported options return errors rather than silently doing something else. Each command starts a fresh non-interactive `bash --noprofile --norc`; successful foreground state capture carries the working directory and eligible exports to later calls, but not unexported variables, functions or traps. Shell options are not tracked as shell state, although eligible exports can affect Bash startup. Startup/loader variables and Bash-managed cwd variables are not replayed; Bash may create its own defaults. A timeout or a command that exits before state capture leaves the previous tracked state unchanged. Foreground terminal calls reject `workdir`: use an explicit `cd` in the command to update the tracked cwd, or use `background: true` with `workdir`. Background relative workdirs resolve against the receiver's cwd, and the response reports the job's physical starting cwd. Background changes do not update the tracked state.
 
 Every routed call is approved by Hermes first. `terminal` uses the same dangerous-command gate as a local shell (`tools.approval.check_all_command_guards`, with remote SSH authority as the backend class): hardline commands are refused, flagged commands ask the person through the normal CLI prompt or gateway card, deny rules and allowlists apply, and `--yolo`/approval mode means the same thing remotely as locally. `process` and `process_manage` `write`/`submit` pass that same command gate on the exact stdin payload before the human gate; the human allowlist entry is that payload, so approving `kill` or one stdin does not approve a different one. `write_file`, `patch`, `skill_manage`, other state-changing `process`/`process_manage` actions and `mcp__*` calls take the human-approval gate (`tools.approval.request_tool_approval`) with one allowlist entry per machine and remote directory, skill, tool or process payload — answer "always" once and that grain stops asking. Reads keep local parity (no prompt), except credential files (`.env`, `id_*`, `auth.json`, `.pem`/`.key`, anything under `.ssh`), which are refused rather than returned unredacted. A denied or unavailable gate refuses the call: it never runs remotely and never falls back to local.
 
@@ -201,7 +203,11 @@ The model-facing gateway supports:
 - Optional `machine` addresses a configured remote without changing selection.
 - `action=transfer` with explicit `source_machine`, `source`, `destination_machine`, `destination`, `move=false`.
 
-Transfers support regular files up to 8 MiB, SHA256 verification, no destination overwrite, and copy-before-delete moves. When an endpoint is the gateway host, its path must be absolute and resolve under the configured `transfer_dir`, and `$HERMES_HOME`/`~/.ssh` are always refused; moving a gateway-local source additionally requires `allow_local_delete: true`. Stop concurrent writers before moving. Use scp/sftp/rsync for large files or directory trees. Transfers do not preserve metadata and are not atomic across two hosts.
+Transfers copy regular files up to 8 MiB with SHA256 verification and no destination overwrite. **`move=true` is rejected before source or destination transfer I/O**, regardless of `allow_local_delete`; copy first and arrange any source deletion separately after verification. When an endpoint is the gateway host, its path must be absolute and resolve under the configured `transfer_dir`, and `$HERMES_HOME`/`~/.ssh` are always refused. Transfers do not preserve metadata and are not atomic across two hosts.
+
+Gateway and receiver copy destinations require a filesystem that supports anonymous staging and linking the unnamed inode; otherwise the copy fails closed rather than writing directly or reporting partial success. This currently excludes macOS destinations and some filesystems. macOS execution has not been tested. For large files, directory trees, or unavailable transfer endpoints, use scp/sftp/rsync.
+
+Receiver `write_file` and `patch` are unavailable for all paths, including new files, because safe atomic replacement is not supported. Skill mutations that require text creation or replacement are also unavailable, including `create`, `patch` and `write_file` when the staged result is text. `remove_file` is also unavailable because safe conditional deletion is not supported; batches targeting more than one distinct file are rejected. These restrictions do not sandbox terminal or MCP commands, which have the SSH user's authority and require the applicable approvals.
 
 ## Recovery
 

@@ -2,8 +2,8 @@
 # Standalone receiver install. No Python, Hermes, Bun or Rust toolchain on target.
 set -euo pipefail
 fail() { printf 'Installation failed: %s\n' "$*" >&2; exit 1; }
-version='v1.2.1'
-pinned_version=$version
+version='v1.3.0'
+
 binary=''
 digest=''
 public_key=''
@@ -20,7 +20,7 @@ while (($#)); do
         --public-key-file) public_key_file=${2:?}; shift 2 ;;
         --teleoperator-home) config_home=${2:?}; shift 2 ;;
         --allow-root) allow_root=true; shift ;;
-        --help) printf '%s\n' 'Usage: bash install.sh [--version v1.2.1] [--public-key "ssh-ed25519 ..."] [--teleoperator-home /absolute/path] [--allow-root]' 'Release downloads are verified against SHA256 digests embedded in this script for the exact tag; SHA256SUMS is only cross-checked.' 'Offline: --binary /path/to/receiver --sha256 <trusted SHA256>'; exit ;;
+        --help) printf '%s\n' 'Usage: bash install.sh [--version v1.3.0] [--public-key "ssh-ed25519 ..."] [--teleoperator-home /absolute/path] [--allow-root]' 'Release downloads are verified against SHA256 digests embedded in this script for the exact tag; SHA256SUMS is only cross-checked.' 'Offline: --binary /path/to/receiver --sha256 <trusted SHA256>'; exit ;;
         *) fail "Unknown option: $1 (legacy --python/--hermes-home are no longer supported)" ;;
     esac
 done
@@ -74,6 +74,7 @@ trap 'exit 143' TERM
 # Generated from hermes_teleoperator/version.py by scripts/sync_receiver_digests.py.
 # Do not edit by hand. These digests are the trust root for release downloads;
 # SHA256SUMS is fetched only to detect a rewritten release.
+pinned_version='v1.2.0'
 pinned_digest() {
     case $1 in
         hermes-teleoperator-receiver-aarch64-apple-darwin) printf '%s' '6cb7f126fc9d08a5457b868534267c7cac1098ac0fcea50224e2db1948d9fa41' ;;

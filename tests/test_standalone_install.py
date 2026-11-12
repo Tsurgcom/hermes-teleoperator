@@ -360,7 +360,9 @@ class ReleasePinTests(unittest.TestCase):
         self.manifest = self.root / 'SHA256SUMS'
         self.addCleanup(self.tmp.cleanup)
 
-    def run_install(self, *extra, script=ROOT / 'install.sh', env=None, allow_root=True):
+    def run_install(self, *extra, script=ROOT / 'install.sh', env=None, allow_root=True,
+                    use_pinned_version=True):
+        from hermes_teleoperator.version import RECEIVER_PINS_VERSION
         base = {**os.environ, 'HOME': str(self.home),
                 'PATH': f'{self.commands}:/usr/bin:/bin',
                 'FAKE_BINARY': str(self.binary), 'FAKE_MANIFEST': str(self.manifest),
@@ -369,8 +371,21 @@ class ReleasePinTests(unittest.TestCase):
             base.pop(key, None)
         base.update(env or {})
         root_option = ['--allow-root'] if allow_root else []
-        return subprocess.run(['bash', str(script), *root_option, *extra], env=base,
+        version_option = ['--version', f'v{RECEIVER_PINS_VERSION}'] if use_pinned_version else []
+        return subprocess.run(['bash', str(script), *root_option, *version_option, *extra], env=base,
                               capture_output=True, text=True, timeout=30)
+
+    def test_stale_default_release_is_refused_before_download(self):
+        from hermes_teleoperator.version import RECEIVER_PINS_VERSION
+        script = self.root / 'stale.sh'
+        text = (ROOT / 'install.sh').read_text()
+        text = re.sub(r"^version='[^']+'", "version='v9.9.9'", text, count=1, flags=re.M)
+        script.write_text(text)
+        result = self.run_install(script=script, use_pinned_version=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('only authorizes release', result.stderr)
+        self.assertIn(f'v{RECEIVER_PINS_VERSION}', result.stderr)
+        self.assertFalse(self.marker.exists())
 
     def write_payload(self, payload=b'#!/bin/sh\nprintf PINNED_OK\n', manifest_digest=None):
         self.binary.write_bytes(payload)
@@ -446,7 +461,7 @@ class ReleasePinTests(unittest.TestCase):
         self.assertFalse(self.launcher().exists())
 
     def test_embedded_pin_drives_install_when_manifest_agrees(self):
-        # The real v1.1.2 bytes are not in this fixture, so substitute the test
+        # The real release bytes are not in this fixture, so substitute the test
         # binary's digest in a copy. Parity tests keep the real table honest.
         payload = b'#!/bin/sh\nprintf PINNED_OK\n'
         digest = self.write_payload(payload)
@@ -456,8 +471,11 @@ class ReleasePinTests(unittest.TestCase):
             r"(hermes-teleoperator-receiver-x86_64-unknown-linux-musl\) printf '%s' ')[0-9a-f]{64}(')",
             rf'\g<1>{digest}\g<2>', text)
         self.assertEqual(count, 1)
+        from hermes_teleoperator.version import RECEIVER_PINS_VERSION
+        text = re.sub(r"^version='[^']+'", f"version='v{RECEIVER_PINS_VERSION}'",
+                      text, count=1, flags=re.M)
         script.write_text(text)
-        result = self.run_install(script=script)
+        result = self.run_install(script=script, use_pinned_version=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(subprocess.check_output([str(self.launcher())], text=True), 'PINNED_OK')
         self.assertEqual(self.marker.read_text().count('/SHA256SUMS '), 1)

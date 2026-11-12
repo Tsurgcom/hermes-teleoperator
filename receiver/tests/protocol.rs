@@ -13,18 +13,27 @@ impl Drop for Client {fn drop(&mut self){self.input.take();self.child.wait().unw
  let mut c=Client::new();let digest="ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
  let a=json!({"path":p,"data":"YWJj","sha256":digest});assert_eq!(c.request("file_put",a.clone())["result"]["size"],3);
  assert!(c.request("file_put",a)["error"].is_object());assert_eq!(c.request("file_get",json!({"path":p}))["result"]["sha256"],digest);
- assert!(c.request("file_remove",json!({"path":p,"sha256":"wrong"}))["error"].is_object());
+ let before:Vec<_>=std::fs::read_dir(&dir).unwrap().map(|e|e.unwrap().file_name()).collect();
+ for sum in ["wrong",digest] {
+  let rejected=c.request("file_remove",json!({"path":p,"sha256":sum}));
+  assert!(rejected["error"]["message"].as_str().unwrap_or("").contains("Conditional file removal is unavailable"),"{rejected}");
+  assert_eq!(std::fs::read(&p).unwrap(),b"abc");
+  let after:Vec<_>=std::fs::read_dir(&dir).unwrap().map(|e|e.unwrap().file_name()).collect();assert_eq!(before,after);
+ }
  let link=dir.join("link");let _=std::fs::remove_file(&link);std::os::unix::fs::symlink(&p,&link).unwrap();assert!(c.request("file_get",json!({"path":link}))["error"].is_object());
- assert!(c.request("file_remove",json!({"path":p,"sha256":digest}))["result"].is_object());std::fs::remove_dir_all(dir).unwrap();
+ std::fs::remove_dir_all(dir).unwrap();
 }
-#[test] fn text_tools_and_catalog_work_without_hermes() {
- let mut c=Client::new();let p=std::env::current_dir().unwrap().join("target/text-tool-test");let r=c.tool("write_file",json!({"path":p,"content":"hello\nworld\n"}));assert!(r["result"].is_object(),"{r}");
+#[test] fn text_reads_work_but_writes_and_patches_are_refused() {
+ let mut c=Client::new();let dir=std::env::current_dir().unwrap().join("target/text-tool-test");let _=std::fs::remove_dir_all(&dir);std::fs::create_dir_all(&dir).unwrap();
+ let p=dir.join("notes.txt");let missing=dir.join("missing/new.txt");std::fs::write(&p,"hello\nworld\n").unwrap();
+ for (name,args) in [("write_file",json!({"path":p,"content":"changed"})),("write_file",json!({"path":missing,"content":"new"})),("patch",json!({"path":p,"old_string":"world","new_string":"earth"})),("patch",json!({"path":p,"old_string":"world","new_string":"earth","replace_all":true}))] {
+  let r=c.tool(name,args);assert!(r["error"].is_object(),"{r}");assert_eq!(std::fs::read_to_string(&p).unwrap(),"hello\nworld\n");assert!(!missing.exists());assert_eq!(std::fs::read_dir(&dir).unwrap().count(),1);
+ }
  assert_eq!(c.tool("read_file",json!({"path":p,"offset":2,"limit":1}))["result"]["content"],"2|world");
- assert!(c.tool("patch",json!({"path":p,"old_string":"world","new_string":"earth"}))["result"].is_object());
- assert!(c.tool("search_files",json!({"path":p,"pattern":"earth"}))["result"]["matches"].as_array().unwrap().len()>0);
+ assert!(c.tool("search_files",json!({"path":p,"pattern":"world"}))["result"]["matches"].as_array().unwrap().len()>0);
  assert!(c.tool("read_file",json!({"path":p,"binary":true}))["error"].is_object());
  let schemas=c.request("search",json!({"query":"read_file"}));assert!(schemas["result"]["tools"].as_array().unwrap().iter().any(|s|s["function"]["name"]=="read_file"));
- assert_eq!(c.request("describe",json!({"name":"read_file"}))["result"]["function"]["parameters"]["type"],"object");std::fs::remove_file(p).unwrap();
+ assert_eq!(c.request("describe",json!({"name":"read_file"}))["result"]["function"]["parameters"]["type"],"object");std::fs::remove_dir_all(dir).unwrap();
 }
 #[test] fn terminal_preserves_state_and_manages_background() {
  let mut c=Client::new();let a=c.tool("terminal",json!({"command":"cd /; export TELEOP_TEST=kept"}));assert_eq!(a["result"]["exit_code"],0,"{a}");
@@ -35,15 +44,22 @@ impl Drop for Client {fn drop(&mut self){self.input.take();self.child.wait().unw
  let t=c.tool("terminal",json!({"command":"sleep 10","timeout":1}));assert_eq!(t["result"]["timed_out"],true,"{t}");
  assert!(c.tool("terminal",json!({"command":"true","pty":true}))["error"].is_object());
 }
-#[test] fn skills_are_filesystem_only_and_confined() {
- let home=std::env::current_dir().unwrap().join("target/skills-test");let _=std::fs::remove_dir_all(&home);std::fs::create_dir_all(&home).unwrap();
- let mut cmd=Command::new(env!("CARGO_BIN_EXE_hermes-teleoperator-receiver"));cmd.env("TELEOPERATOR_HOME",&home).stdin(Stdio::piped()).stdout(Stdio::piped());let mut child=cmd.spawn().unwrap();let mut c=Client{input:child.stdin.take(),output:BufReader::new(child.stdout.take().unwrap()),child};
- let create=c.tool("skill_manage",json!({"operations":[{"action":"create","name":"sample","content":"---\nname: sample\ndescription: test\n---\n# Example"}]}));assert!(create["result"].is_object(),"{create}");
+#[test] fn skills_are_readable_but_mutations_are_refused() {
+ let home=std::env::current_dir().unwrap().join("target/skills-test");let _=std::fs::remove_dir_all(&home);let skill=home.join("skills/sample");std::fs::create_dir_all(skill.join("references")).unwrap();
+ let original="---\nname: sample\ndescription: test\n---\n# Example";std::fs::write(skill.join("SKILL.md"),original).unwrap();std::fs::write(skill.join("references/guide.md"),"a guide").unwrap();
+ let mut child=Command::new(env!("CARGO_BIN_EXE_hermes-teleoperator-receiver")).env("TELEOPERATOR_HOME",&home).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();let mut c=Client{input:child.stdin.take(),output:BufReader::new(child.stdout.take().unwrap()),child};
  assert!(c.tool("skills_list",json!({}))["result"]["skills"].as_array().unwrap().iter().any(|x|x["name"]=="sample"));
  assert!(c.tool("skill_view",json!({"name":"sample"}))["result"]["content"].as_str().unwrap().contains("Example"));
- assert!(c.tool("skill_manage",json!({"operations":[{"action":"write_file","name":"sample","file_path":"references/guide.md","file_content":"a guide"}]}))["result"].is_object());
  assert_eq!(c.tool("skill_view",json!({"name":"sample","file_path":"references/guide.md"}))["result"]["content"],"a guide");
- assert!(c.tool("skill_manage",json!({"operations":[{"action":"write_file","name":"sample","file_path":"../escape","file_content":"bad"}]}))["error"].is_object());drop(c);std::fs::remove_dir_all(home).unwrap();
+ let ops=json!([
+  {"action":"create","name":"new","content":original},
+  {"action":"patch","name":"sample","old_string":"Example","new_string":"Changed"},
+  {"action":"write_file","name":"sample","file_path":"references/new.md","file_content":"new"},
+  {"action":"remove_file","name":"sample","file_path":"references/guide.md"},
+  {"action":"write_file","name":"sample","file_path":"../escape","file_content":"bad"}
+ ]);
+ for op in ops.as_array().unwrap(){let r=c.tool("skill_manage",json!({"operations":[op]}));assert!(r["error"].is_object(),"{r}");assert_eq!(std::fs::read_to_string(skill.join("SKILL.md")).unwrap(),original);assert_eq!(std::fs::read_to_string(skill.join("references/guide.md")).unwrap(),"a guide");assert!(!skill.join("references/new.md").exists());assert!(!home.join("skills/new").exists());}
+ drop(c);std::fs::remove_dir_all(home).unwrap();
 }
 #[test] fn limits_and_cleanup_are_real() {
  let mut c=Client::new();let huge=c.tool("terminal",json!({"command":"head -c 1200000 /dev/zero | tr '\\0' x"}));assert_eq!(huge["result"]["truncated"],true);assert!(huge["result"]["output"].as_str().unwrap().len()<=1048576);
@@ -58,6 +74,18 @@ impl Drop for Client {fn drop(&mut self){self.input.take();self.child.wait().unw
 #[test] fn skill_batches_validate_before_mutation() {
  let home=std::env::current_dir().unwrap().join("target/skill-rollback");let _=std::fs::remove_dir_all(&home);std::fs::create_dir_all(&home).unwrap();let mut child=Command::new(env!("CARGO_BIN_EXE_hermes-teleoperator-receiver")).env("TELEOPERATOR_HOME",&home).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();let mut c=Client{input:child.stdin.take(),output:BufReader::new(child.stdout.take().unwrap()),child};
  let r=c.tool("skill_manage",json!({"operations":[{"action":"create","name":"rollback","content":"---\nname: rollback\ndescription: test\n---\nTest"},{"action":"write_file","name":"rollback","file_path":"../outside","file_content":"bad"}]}));assert!(r["error"].is_object());assert!(!home.join("skills/rollback").exists());drop(c);std::fs::remove_dir_all(home).unwrap();
+}
+#[test] fn multi_file_skill_batches_are_refused_without_mutation() {
+ let home=std::env::current_dir().unwrap().join("target/skill-multifile-refusal");let _=std::fs::remove_dir_all(&home);std::fs::create_dir_all(&home).unwrap();
+ let mut child=Command::new(env!("CARGO_BIN_EXE_hermes-teleoperator-receiver")).env("TELEOPERATOR_HOME",&home).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+ let mut c=Client{input:child.stdin.take(),output:BufReader::new(child.stdout.take().unwrap()),child};
+ let original="---\nname: sample\ndescription: original\n---\n# Original";
+ let skill=home.join("skills/sample/SKILL.md");std::fs::create_dir_all(skill.parent().unwrap()).unwrap();std::fs::write(&skill,original).unwrap();
+ let batch=c.tool("skill_manage",json!({"operations":[{"action":"patch","name":"sample","old_string":"Original","new_string":"Changed"},{"action":"write_file","name":"sample","file_path":"references/new.md","file_content":"new"}]}));
+ assert!(batch["error"].is_object(),"{batch}");
+ assert_eq!(std::fs::read_to_string(&skill).unwrap(),original);
+ assert!(!home.join("skills/sample/references").exists());
+ drop(c);std::fs::remove_dir_all(home).unwrap();
 }
 #[test] fn foreground_workdir_is_rejected_without_mutating_shell_or_running_command() {
  let mut c=Client::new();
@@ -134,12 +162,7 @@ impl Drop for Client {fn drop(&mut self){self.input.take();self.child.wait().unw
  let home=std::env::current_dir().unwrap().join("target/skill-categories");let _=std::fs::remove_dir_all(&home);std::fs::create_dir_all(&home).unwrap();
  let mut child=Command::new(env!("CARGO_BIN_EXE_hermes-teleoperator-receiver")).env("TELEOPERATOR_HOME",&home).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
  let mut c=Client{input:child.stdin.take(),output:BufReader::new(child.stdout.take().unwrap()),child};
- let batch=c.tool("skill_manage",json!({"operations":[
-  {"action":"create","name":"sample","category":"widgets","content":"---\nname: sample\ndescription: one\n---\n# One"},
-  {"action":"create","name":"sample","category":"gadgets","content":"---\nname: sample\ndescription: two\n---\n# Two"},
-  {"action":"create","name":"onlyone","category":"widgets","content":"---\nname: onlyone\ndescription: solo\n---\n# Solo"}
- ]}));
- assert!(batch["result"].is_object(),"{batch}");
+ for (dir,content) in [("widgets/sample","---\nname: sample\ndescription: one\n---\n# One"),("gadgets/sample","---\nname: sample\ndescription: two\n---\n# Two"),("widgets/onlyone","---\nname: onlyone\ndescription: solo\n---\n# Solo")] {let p=home.join("skills").join(dir);std::fs::create_dir_all(&p).unwrap();std::fs::write(p.join("SKILL.md"),content).unwrap();}
  let names:Vec<_>=c.tool("skills_list",json!({}))["result"]["skills"].as_array().unwrap().iter().map(|x|x["name"].as_str().unwrap().to_string()).collect();
  assert!(names.contains(&"widgets/sample".to_string())&&names.contains(&"gadgets/sample".to_string()),"{names:?}");
  let ambiguous=c.tool("skill_view",json!({"name":"sample"}));
@@ -187,6 +210,17 @@ impl Drop for Client {fn drop(&mut self){self.input.take();self.child.wait().unw
  assert_eq!(cleared["result"]["output"],"inside","{cleared}");
  let still=c.tool("terminal",json!({"command":"printf '%s' \"${TELEOP_UNSET_DEMO-gone}\""}));
  assert_eq!(still["result"]["output"],"gone","{still}");
+}
+#[test] fn unpolled_background_exit_kills_orphaned_children() {
+ let mut c=Client::new();
+ let marker=std::env::temp_dir().join(format!("teleop-unpolled-child-{}",std::process::id()));
+ let _=std::fs::remove_file(&marker);
+ let command=format!("(sleep 1; printf leaked > '{}') &",marker.display());
+ let job=c.tool("terminal",json!({"command":command,"background":true,"timeout":30}));
+ assert!(job["result"]["session_id"].is_string(),"{job}");
+ std::thread::sleep(std::time::Duration::from_millis(1600));
+ let leaked=marker.exists();let _=std::fs::remove_file(&marker);
+ assert!(!leaked,"unpolled background child survived its leader: {job}");
 }
 #[test] fn background_exit_kills_orphaned_children() {
  let mut c=Client::new();
@@ -238,11 +272,7 @@ impl Drop for Client {fn drop(&mut self){self.input.take();self.child.wait().unw
  let home=std::env::current_dir().unwrap().join("target/skill-root-depth");let _=std::fs::remove_dir_all(&home);std::fs::create_dir_all(&home).unwrap();
  let mut child=Command::new(env!("CARGO_BIN_EXE_hermes-teleoperator-receiver")).env("TELEOPERATOR_HOME",&home).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
  let mut c=Client{input:child.stdin.take(),output:BufReader::new(child.stdout.take().unwrap()),child};
- let batch=c.tool("skill_manage",json!({"operations":[
-  {"action":"create","name":"sample","content":"---\nname: sample\ndescription: root\n---\n# Root"},
-  {"action":"create","name":"sample","category":"widgets","content":"---\nname: sample\ndescription: nested\n---\n# Nested"}
- ]}));
- assert!(batch["result"].is_object(),"{batch}");
+ for (dir,content) in [("sample","---\nname: sample\ndescription: root\n---\n# Root"),("widgets/sample","---\nname: sample\ndescription: nested\n---\n# Nested")] {let p=home.join("skills").join(dir);std::fs::create_dir_all(&p).unwrap();std::fs::write(p.join("SKILL.md"),content).unwrap();}
  let ambiguous=c.tool("skill_view",json!({"name":"sample"}));
  let message=ambiguous["error"]["message"].as_str().unwrap_or("");
  assert!(message.contains("Ambiguous skill name")&&message.contains("./sample"),"{ambiguous}");
@@ -250,7 +280,7 @@ impl Drop for Client {fn drop(&mut self){self.input.take();self.child.wait().unw
  assert!(c.tool("skill_view",json!({"name":"widgets/sample"}))["result"]["content"].as_str().unwrap().contains("# Nested"));
  let deep=(0..16).map(|i|format!("d{i}")).collect::<Vec<_>>().join("/");
  let rejected=c.tool("skill_manage",json!({"operations":[{"action":"create","name":"leaf","category":deep,"content":"---\nname: leaf\ndescription: deep\n---\n# Deep"}]}));
- assert!(rejected["error"]["message"].as_str().unwrap_or("").contains("Invalid skill path"),"{rejected}");
+ assert!(rejected["error"].is_object(),"{rejected}");assert!(!home.join("skills").join(&deep).exists());
  let names:Vec<_>=c.tool("skills_list",json!({}))["result"]["skills"].as_array().unwrap().iter().map(|x|x["name"].as_str().unwrap().to_string()).collect();
  assert!(!names.iter().any(|n|n.matches('/').count()>=16),"{names:?}");
  drop(c);std::fs::remove_dir_all(home).unwrap();

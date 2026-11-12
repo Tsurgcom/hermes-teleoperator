@@ -170,27 +170,33 @@ for line in sys.stdin:
                         'printf "%s:%s" "$TELEOPERATOR_SSH_MARKER" "$PWD"'}, local)
                     self.assertEqual(result['output'], 'beta-kept:' + str(root / 'beta/work'))
                     c.switch('conversation', 'alpha')
-                    with self.subTest(feature='binary transfer no-overwrite and verified move'):
+                    with self.subTest(feature='binary copy and disabled move'):
                         source = transfer_dir / 'local.bin'
                         payload = b'\x00secure-transfer\xff'
                         source.write_bytes(payload)
                         destination = root / 'alpha/arrived.bin'
                         destination.write_bytes(b'DO_NOT_OVERWRITE')
                         with self.assertRaises(TransportError):
-                            c.transfer('conversation', 'local', str(source), 'alpha', str(destination), move=True)
+                            c.transfer('conversation', 'local', str(source), 'alpha', str(destination))
                         self.assertEqual(destination.read_bytes(), b'DO_NOT_OVERWRITE')
                         self.assertEqual(source.read_bytes(), payload)
                         destination.unlink()
-                        transfer = c.transfer('conversation', 'local', str(source), 'alpha', str(destination), move=True)
-                        self.assertTrue(transfer['moved'])
+                        with self.assertRaisesRegex(OSError, 'Safe source deletion is unavailable'):
+                            c.transfer('conversation', 'local', str(source), 'alpha', str(destination), move=True)
+                        self.assertEqual(source.read_bytes(), payload)
+                        self.assertFalse(destination.exists())
+                        transfer = c.transfer('conversation', 'local', str(source), 'alpha', str(destination))
+                        self.assertFalse(transfer['moved'])
                         self.assertEqual(transfer['sha256'], hashlib.sha256(payload).hexdigest())
                         self.assertEqual(transfer['size'], len(payload))
                         self.assertEqual(destination.read_bytes(), payload)
-                        self.assertFalse(source.exists())
-                        # Reverse move also exercises target-side checksum-guarded removal.
+                        self.assertEqual(source.read_bytes(), payload)
                         returned = transfer_dir / 'returned.bin'
-                        c.transfer('conversation', 'alpha', str(destination), 'local', str(returned), move=True)
-                        self.assertFalse(destination.exists())
+                        with self.assertRaisesRegex(OSError, 'Safe source deletion is unavailable'):
+                            c.transfer('conversation', 'alpha', str(destination), 'local', str(returned), move=True)
+                        self.assertEqual(destination.read_bytes(), payload)
+                        self.assertFalse(returned.exists())
+                        c.transfer('conversation', 'alpha', str(destination), 'local', str(returned))
                         self.assertEqual(returned.read_bytes(), payload)
                     c.disconnect('conversation')
                     result = c.route('conversation', 'terminal', {'command': 'pwd'}, local)

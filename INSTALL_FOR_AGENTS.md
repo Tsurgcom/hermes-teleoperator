@@ -25,11 +25,11 @@ A non-root destination account is the default. Direct root installation needs ex
 
 Read the repository README and the installed Hermes CLI's help. Load the `hermes-agent` skill if available. Check `hermes --version`, `hermes plugins install --help` and existing plugins before installing: do not create a second discovery path for an already-installed copy.
 
-For **v1.2.1**, first verify that the release and its receiver assets have actually been published. In a verified checkout on the gateway, fetch the exact tag from the trusted repository and resolve it to a full commit SHA (the `^{commit}` suffix also handles annotated tags):
+For **v1.3.0**, first verify that the release and its receiver assets have actually been published. In a verified checkout on the gateway, fetch the exact tag from the trusted repository and resolve it to a full commit SHA (the `^{commit}` suffix also handles annotated tags):
 
 ```sh
-git fetch https://github.com/Tsurgcom/hermes-teleoperator.git refs/tags/v1.2.1:refs/tags/v1.2.1 && \
-  SOURCE_SHA=$(git rev-parse --verify 'refs/tags/v1.2.1^{commit}') && \
+git fetch https://github.com/Tsurgcom/hermes-teleoperator.git refs/tags/v1.3.0:refs/tags/v1.3.0 && \
+  SOURCE_SHA=$(git rev-parse --verify 'refs/tags/v1.3.0^{commit}') && \
   printf '%s\n' "$SOURCE_SHA"
 ```
 
@@ -102,6 +102,8 @@ Then deploy, still **on the gateway**:
 
 The helper chooses the package from the **destination's** OS/userland ABI, prefers static musl on supported Linux architectures, and checks dynamic-only glibc floors/macOS minimums. It downloads the exact gateway-matching release and `SHA256SUMS` **onto the gateway**, verifies bytes, transfers them over SSH, and installs offline on the destination. It checks staged version/protocol/identity before switching the live launcher, and checks the installed launcher afterward. No destination network fetch or language runtime is required. Release checksums are not independent publisher signatures.
 
+This development tree's version is `1.3.0`, but its asset pins are still for `1.2.0`; release-download deployment fails closed until matching assets are built and pinned. See `RELEASING.md`. Do not substitute an older release. The Linux target-side installer also accepts independently verified bytes via `--binary` and `--sha256`.
+
 Read and retain the returned JSON: `version`, `asset`, `identity`, `executable`, `teleoperator_home`, `handshake` and optional `ssh_authorization_entry`. Deployment does **not** read or modify SSH authorization files or write the gateway's machine configuration. Review `ssh_authorization_entry` with the user; a destination administrator must explicitly authorize that exact dedicated-key entry before the dedicated SSH connection can work. Never replace an existing key or silently enroll it. Ambiguous ABI, missing assets and unsafe installation permissions are errors to investigate, not reasons to bypass checks. If entry generation rejects a launcher path that needs shell quoting, choose a supported account/path with the user rather than weakening forced-command quoting.
 
 If the user cannot provide administrative SSH, stop here and explain what access is missing. The README's target-side `install.sh` is a Linux-only alternative, not this preferred gateway-download/offline-transfer flow. Do not quietly substitute a client-side `curl | bash` command. An offline/manual handoff requires an explicit user-agreed procedure; the deployment helper itself needs administrative SSH.
@@ -127,7 +129,7 @@ Read any existing `$HERMES_HOME/teleoperator.json` first. Preserve unrelated mac
 }
 ```
 
-Add `known_hosts` if using a non-default verified file. Store paths, not key contents or passwords, in this JSON. Use `executable`/`teleoperator_home`, never the removed `python`/`hermes_home` receiver configuration. Repeat probe/deployment per destination; never reuse another machine's returned identity or paths blindly. Gateway-local transfers need an existing absolute `transfer_dir`; keep `allow_local_delete` false unless the user explicitly wants `move=true` to delete gateway-side sources. `$HERMES_HOME` and `~/.ssh` are always refused.
+Add `known_hosts` if using a non-default verified file. Store paths, not key contents or passwords, in this JSON. Use `executable`/`teleoperator_home`, never the removed `python`/`hermes_home` receiver configuration. Repeat probe/deployment per destination; never reuse another machine's returned identity or paths blindly. Gateway-local transfers need an existing absolute `transfer_dir`; `$HERMES_HOME` and `~/.ssh` are always refused. All moves are disabled, even if `allow_local_delete` is true.
 
 Configuration is cached once the plugin's controller is first used. If you queried Teleoperator before adding machines, request the necessary gateway restart/new runtime and conversation reload before testing; a receiver reconnect alone does not reload that configuration. Preserve a continuation note as above.
 
@@ -138,11 +140,11 @@ Configuration is cached once the plugin's controller is first used. If you queri
 3. Use a harmless remote terminal command such as `pwd; hostname; id -un`. Check the result's machine attribution. Run `skills_list` to see the receiver's actual skill catalog; an empty catalog is valid on a fresh installation.
 4. Return with `teleoperator(action="switch", machine="local")` and verify status. For multiple destinations, test each separately. Tell the user where you left the conversation.
 
-Human commands are `/teleport workstation`, `/teleport back`, `/teleport local`, `/teleport status` and `/teleport reconnect workstation`. Switching preserves each live shell; reconnect loses that shell's state. A disconnected remote remains selected and fails closed: **never assume a failed remote command ran locally**.
+Human commands are `/teleport workstation`, `/teleport back`, `/teleport local`, `/teleport status` and `/teleport reconnect workstation`. Each terminal call starts a fresh Bash; successful foreground calls retain cwd and eligible exports on the live connection, but not unexported variables, functions, traps or shell options. Reconnect resets tracked state. A disconnected remote remains selected and fails closed: **never assume a failed remote command ran locally**.
 
 Receiver skills live in `<teleoperator_home>/skills/<name>/SKILL.md`. Remote MCP is off by default; only configure explicitly requested stdio servers/allowlists in the receiver's `config.json`. Do not copy gateway secrets, profiles or all MCP servers to the destination. The receiver does not automatically load a destination Hermes installation's skills, plugins, credentials or approval guards.
 
-The model, memory and initial instructions stay on the gateway; load remote project/skill instructions explicitly. Browser/desktop tools, delegation, cron and connectors are not teleported. Switch local before unsupported operations. For large files/directories use scp/sftp/rsync; Teleoperator file transfers are regular files up to 8 MiB without overwriting existing destinations.
+The model, memory and initial instructions stay on the gateway; load remote project/skill instructions explicitly. Browser/desktop tools, delegation, cron and connectors are not teleported. Switch local before unsupported operations. For large files/directories use scp/sftp/rsync; Teleoperator copies regular files up to 8 MiB without overwriting existing destinations. Moves are rejected before transfer I/O. Gateway and receiver copy destinations require anonymous staging and unnamed inode linking; they fail closed without either, including on macOS and unsupported filesystems, rather than writing directly or reporting partial success. macOS has not been tested. Receiver `write_file` and `patch` are unavailable for all paths, as are skill mutations requiring text creation or replacement. Skill `remove_file` is also unavailable because safe conditional deletion is not supported; batches targeting more than one distinct file are rejected.
 
 ## Recovery and completion
 
