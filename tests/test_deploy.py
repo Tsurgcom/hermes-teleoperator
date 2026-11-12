@@ -621,7 +621,8 @@ class OfflineExecutionTests(unittest.TestCase):
                 self.assertEqual(launcher.read_bytes(), old)
                 self.assertEqual((config / 'config.json').read_text(), '{"preserved":true}')
                 self.assertEqual(list((home / '.local/lib/hermes-teleoperator').glob('.deploy.*')), [])
-                with patch.object(deploy, 'VERSION', '0.0.0'):
+                with patch.object(deploy, 'VERSION', '0.0.0'), \
+                     patch.object(deploy, 'RECEIVER_PINS_VERSION', '0.0.0'):
                     with self.assertRaisesRegex(deploy.DeployError, 'mismatch'):
                         deploy.deploy({'host': 'unused'}, allow_root=True)
                 self.assertEqual(launcher.read_bytes(), old)
