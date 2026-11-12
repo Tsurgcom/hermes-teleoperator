@@ -13,7 +13,7 @@ import time
 import urllib.request
 
 from .transport import RpcProcess, ssh_argv, ssh_environment
-from .version import RECEIVER_SHA256, VERSION
+from .version import RECEIVER_PINS_VERSION, RECEIVER_SHA256, VERSION
 
 
 class DeployError(RuntimeError):
@@ -77,6 +77,10 @@ def pinned_digest(asset, pins=None):
     """
     if asset not in ASSETS:
         raise DeployError('Unknown release asset')
+    if pins is None and RECEIVER_PINS_VERSION != VERSION:
+        raise DeployError(
+            f'Receiver digests attest v{RECEIVER_PINS_VERSION}, not v{VERSION}. '
+            'Build a candidate and regenerate the pins before deploying or publishing this version')
     pins = RECEIVER_SHA256 if pins is None else pins
     digest = pins.get(asset)
     if not digest:

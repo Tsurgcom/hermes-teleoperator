@@ -611,7 +611,8 @@ class OfflineExecutionTests(unittest.TestCase):
             with patch.object(deploy, '_run', side_effect=local_run), \
                  patch.object(deploy, '_ping', side_effect=local_ping), \
                  patch.object(deploy, '_fetch', side_effect=fetch), \
-                 patch.object(deploy, 'RECEIVER_SHA256', {asset: digest}):
+                 patch.object(deploy, 'RECEIVER_SHA256', {asset: digest}), \
+                 patch.object(deploy, 'RECEIVER_PINS_VERSION', deploy.VERSION):
                 result = deploy.deploy({'host': 'unused'}, allow_root=True)
                 self.assertEqual(result['handshake']['version'], deploy.VERSION)
                 launcher = Path(result['executable'])
@@ -620,7 +621,8 @@ class OfflineExecutionTests(unittest.TestCase):
                 self.assertEqual(launcher.read_bytes(), old)
                 self.assertEqual((config / 'config.json').read_text(), '{"preserved":true}')
                 self.assertEqual(list((home / '.local/lib/hermes-teleoperator').glob('.deploy.*')), [])
-                with patch.object(deploy, 'VERSION', '0.0.0'):
+                with patch.object(deploy, 'VERSION', '0.0.0'), \
+                     patch.object(deploy, 'RECEIVER_PINS_VERSION', '0.0.0'):
                     with self.assertRaisesRegex(deploy.DeployError, 'mismatch'):
                         deploy.deploy({'host': 'unused'}, allow_root=True)
                 self.assertEqual(launcher.read_bytes(), old)
@@ -703,7 +705,8 @@ X11Forwarding no
                 public_release = os.environ.get('TELEOPERATOR_DEPLOY_PUBLIC_RELEASE') == deploy.VERSION
                 pins = {} if public_release else {asset: digest}
                 with patch.object(deploy, '_fetch', side_effect=fetch), \
-                     patch.object(deploy, 'RECEIVER_SHA256', pins):
+                     patch.object(deploy, 'RECEIVER_SHA256', pins), \
+                     patch.object(deploy, 'RECEIVER_PINS_VERSION', deploy.VERSION):
                     result = deploy.deploy(target, allow_root=True,
                                            public_key=(d / 'dedicated.pub').read_text())
                     self.assertEqual(result['handshake']['version'], deploy.VERSION)

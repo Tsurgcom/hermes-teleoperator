@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from hermes_teleoperator.deploy import ASSETS  # noqa: E402
-from hermes_teleoperator.version import RECEIVER_SHA256, VERSION  # noqa: E402
+from hermes_teleoperator.version import RECEIVER_PINS_VERSION, RECEIVER_SHA256, VERSION  # noqa: E402
 
 INSTALL_SH = ROOT / 'install.sh'
 VERSION_PY = ROOT / 'hermes_teleoperator/version.py'
@@ -93,6 +93,10 @@ def main(argv=None):
     version_text = VERSION_PY.read_text(encoding='utf-8')
     install_text = INSTALL_SH.read_text(encoding='utf-8')
     if args.from_sums:
+        if "RECEIVER_PINS_VERSION = " not in version_text:
+            raise SystemExit(f'{VERSION_PY}: RECEIVER_PINS_VERSION not found')
+        version_text = re.sub(r"RECEIVER_PINS_VERSION = '[^']+'",
+                              f"RECEIVER_PINS_VERSION = '{VERSION}'", version_text, count=1)
         rendered = render_version_table(pins)
         pattern = re.compile(r'RECEIVER_SHA256 = \{.*?\n\}', re.S)
         if not pattern.search(version_text):
@@ -111,7 +115,8 @@ def main(argv=None):
         if changed:
             raise SystemExit('Pinned receiver digests are out of sync: ' + ', '.join(changed) +
                              ' (run python scripts/sync_receiver_digests.py)')
-        print(f'Pinned receiver digests are in sync for v{VERSION} ({len(pins)} assets)')
+        print(f'Pinned receiver digests are in sync for v{VERSION} '
+              f'({len(pins)} assets attesting v{RECEIVER_PINS_VERSION})')
         return 0
 
     if version_text != VERSION_PY.read_text(encoding='utf-8'):

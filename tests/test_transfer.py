@@ -1,10 +1,14 @@
 import base64
+import errno
 import hashlib
+import os
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
+from hermes_teleoperator import files
 from hermes_teleoperator.files import file_operation, local_file_operation
 
 
@@ -40,6 +44,21 @@ class TransferTests(unittest.TestCase):
                 file_operation('file_put', {'path': str(path), 'data': 'eA==', 'sha256': 'bad'})
             self.assertFalse(path.exists())
             self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_intermediate_symlink_is_not_followed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            real = base / 'real'
+            real.mkdir()
+            target = real / 'file.bin'
+            target.write_bytes(b'abc')
+            link = base / 'linkdir'
+            link.symlink_to(real, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, 'symlink'):
+                file_operation('file_get', {'path': str(link / 'file.bin')})
+            with self.assertRaisesRegex(ValueError, 'not a directory'):
+                file_operation('file_get', {'path': str(target) + '/child'})
+            self.assertEqual(target.read_bytes(), b'abc')
 
 
 class LocalTransferTests(unittest.TestCase):
@@ -169,3 +188,146 @@ class LocalTransferTests(unittest.TestCase):
                                   **_payload(b'ssh-ed25519 attacker')},
                                  transfer_dir)
         self.assertFalse((ssh / 'authorized_keys').exists())
+
+    def test_failed_staging_create_keeps_the_existing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch('hermes_teleoperator.files.time.time_ns', return_value=123), \
+                 patch('hermes_teleoperator.files._open_unnamed',
+                       side_effect=OSError(errno.EOPNOTSUPP, 'no tmpfile')):
+                staging = root / f'.teleoperator-{os.getpid()}-123'
+                staging.write_bytes(b'keep')
+                dest = root / 'out.bin'
+                with self.assertRaises(FileExistsError):
+                    file_operation('file_put', {'path': str(dest), **_payload(b'abc')})
+                self.assertEqual(staging.read_bytes(), b'keep')
+                self.assertFalse(dest.exists())
+
+    def test_aside_rename_does_not_replace_an_existing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'src').write_bytes(b'source')
+            (root / 'dst').write_bytes(b'dest')
+            dir_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                with self.assertRaises(FileExistsError):
+                    files._rename_noreplace(dir_fd, 'src', dir_fd, 'dst')
+                self.assertEqual((root / 'dst').read_bytes(), b'dest')
+                self.assertEqual((root / 'src').read_bytes(), b'source')
+            finally:
+                os.close(dir_fd)
+
+    def test_replacing_the_aside_file_keeps_both_inodes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / 'move.bin'
+            original = b'original-bytes'
+            path.write_bytes(original)
+            digest = hashlib.sha256(original).hexdigest()
+            calls = {'n': 0}
+            real = files._read_fd
+
+            def read_fd(fd):
+                calls['n'] += 1
+                data, info = real(fd)
+                if calls['n'] == 2:
+                    for entry in root.iterdir():
+                        if entry.is_dir() and entry.name.startswith('.teleoperator-seal-'):
+                            (entry / 'evil').write_bytes(b'EVIL-BYTES')
+                            os.rename(entry / 'evil', entry / 'data')
+                    path.write_bytes(b'new-occupant')
+                return data, info
+
+            with patch('hermes_teleoperator.files._read_fd', side_effect=read_fd):
+                with self.assertRaisesRegex(ValueError, 'changed'):
+                    file_operation('file_remove', {'path': str(path), 'sha256': digest})
+            self.assertEqual(path.read_bytes(), b'new-occupant')
+            blobs = [entry.read_bytes() for entry in root.rglob('*') if entry.is_file()]
+            self.assertIn(b'EVIL-BYTES', blobs)
+            self.assertIn(original, blobs)
+
+    def test_refused_delete_does_not_overwrite_a_new_source_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / 'move.bin'
+            original = b'original-bytes'
+            path.write_bytes(original)
+            digest = hashlib.sha256(original).hexdigest()
+            calls = {'n': 0}
+            real = files._read_fd
+
+            def read_fd(fd):
+                calls['n'] += 1
+                data, info = real(fd)
+                if calls['n'] == 2:
+                    path.write_bytes(b'new-occupant')
+                    return b'tampered-contents', info
+                return data, info
+
+            with patch('hermes_teleoperator.files._read_fd', side_effect=read_fd):
+                with self.assertRaisesRegex(ValueError, 'changed'):
+                    file_operation('file_remove', {'path': str(path), 'sha256': digest})
+            self.assertEqual(path.read_bytes(), b'new-occupant')
+            kept = [p.read_bytes() for p in root.iterdir() if p.name.startswith('.teleoperator-kept-')]
+            self.assertEqual(kept, [original])
+            self.assertFalse(any(p.name.startswith('.teleoperator-seal-') for p in root.iterdir()))
+
+    def test_remove_does_not_delete_a_swapped_public_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / 'move.bin'
+            payload = b'x' * (256 * 1024)
+            path.write_bytes(payload)
+            digest = hashlib.sha256(payload).hexdigest()
+            planted = root / f'.teleoperator-rm-{os.getpid()}-planted'
+            planted.write_bytes(b'keep-me')
+            stop = False
+
+            def spin():
+                while not stop:
+                    for entry in list(root.iterdir()):
+                        if not entry.is_file() or '.teleoperator-rm-' not in entry.name or entry == planted:
+                            continue
+                        replacement = root / f'{entry.name}.replacement'
+                        try:
+                            replacement.write_bytes(b'REPLACED')
+                            os.rename(replacement, entry)
+                        except OSError:
+                            pass
+
+            thread = threading.Thread(target=spin, daemon=True)
+            thread.start()
+            try:
+                file_operation('file_remove', {'path': str(path), 'sha256': digest})
+            finally:
+                stop = True
+                thread.join(1)
+            self.assertFalse(path.exists())
+            self.assertEqual(planted.read_bytes(), b'keep-me')
+            for entry in root.iterdir():
+                if entry.is_file():
+                    self.assertNotEqual(entry.read_bytes(), b'REPLACED', entry.name)
+
+    def test_fallback_publish_does_not_leave_mismatched_destination_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dest = root / 'out.bin'
+            real_link = os.link
+
+            def swapping_link(src, dst, *, src_dir_fd=None, dst_dir_fd=None, follow_symlinks=True):
+                os.unlink(src, dir_fd=src_dir_fd)
+                fd = os.open(src, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+                             0o600, dir_fd=src_dir_fd)
+                os.write(fd, b'EVIL')
+                os.close(fd)
+                return real_link(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd,
+                                 follow_symlinks=follow_symlinks)
+
+            with patch('hermes_teleoperator.files._open_unnamed',
+                       side_effect=OSError(errno.EOPNOTSUPP, 'no tmpfile')), \
+                 patch('hermes_teleoperator.files._link_inode', return_value=False), \
+                 patch('hermes_teleoperator.files.os.link', swapping_link):
+                with self.assertRaisesRegex(ValueError, 'staged bytes|Published file'):
+                    file_operation('file_put', {'path': str(dest), **_payload(b'good bytes')})
+            self.assertFalse(dest.exists())
+            self.assertNotIn(b'EVIL', [p.read_bytes() for p in root.iterdir() if p == dest])

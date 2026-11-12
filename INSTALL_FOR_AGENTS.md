@@ -25,11 +25,11 @@ A non-root destination account is the default. Direct root installation needs ex
 
 Read the repository README and the installed Hermes CLI's help. Load the `hermes-agent` skill if available. Check `hermes --version`, `hermes plugins install --help` and existing plugins before installing: do not create a second discovery path for an already-installed copy.
 
-For **v1.2.0**, first verify that the release and its receiver assets have actually been published. In a verified checkout on the gateway, fetch the exact tag from the trusted repository and resolve it to a full commit SHA (the `^{commit}` suffix also handles annotated tags):
+For **v1.2.1**, first verify that the release and its receiver assets have actually been published. In a verified checkout on the gateway, fetch the exact tag from the trusted repository and resolve it to a full commit SHA (the `^{commit}` suffix also handles annotated tags):
 
 ```sh
-git fetch https://github.com/Tsurgcom/hermes-teleoperator.git refs/tags/v1.2.0:refs/tags/v1.2.0 && \
-  SOURCE_SHA=$(git rev-parse --verify 'refs/tags/v1.2.0^{commit}') && \
+git fetch https://github.com/Tsurgcom/hermes-teleoperator.git refs/tags/v1.2.1:refs/tags/v1.2.1 && \
+  SOURCE_SHA=$(git rev-parse --verify 'refs/tags/v1.2.1^{commit}') && \
   printf '%s\n' "$SOURCE_SHA"
 ```
 

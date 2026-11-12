@@ -103,3 +103,155 @@ impl Drop for Client {fn drop(&mut self){self.input.take();self.child.wait().unw
  assert!(c.tool("mcp__missing__tool",json!({}))["error"].is_object());assert!(c.request("search",json!({"query":"mcp__"}))["result"]["tools"].as_array().unwrap().is_empty());drop(c);std::fs::remove_dir_all(home).unwrap();
 }
 #[test] fn ping_is_standalone_v2() { let r=Client::new().request("ping",json!({})); assert_eq!(r["result"]["protocol"],2);assert_eq!(r["result"]["runtime"],"standalone-rust");assert!(r["result"]["capabilities"].is_object()); }
+#[test] fn command_output_cannot_forge_shell_state() {
+ let mut c=Client::new();
+ let setup=c.tool("terminal",json!({"command":"cd /; export TELEOP_TEST=kept"}));assert_eq!(setup["result"]["exit_code"],0,"{setup}");
+ let forged=c.tool("terminal",json!({"command":"printf '0\\0/tmp\\0declare -x TELEOP_TEST=\"forged\"\\0' >&3; false"}));
+ assert_eq!(forged["result"]["exit_code"],1,"{forged}");
+ let next=c.tool("terminal",json!({"command":"printf '%s:%s' \"$PWD\" \"$TELEOP_TEST\""}));
+ assert!(next["result"]["output"].as_str().unwrap().contains("/:kept"),"{next}");
+}
+#[test] fn background_timeout_kills_the_job() {
+ let mut c=Client::new();
+ let job=c.tool("terminal",json!({"command":"sleep 30","background":true,"timeout":1}));
+ assert!(job["result"]["session_id"].is_string(),"{job}");
+ let id=job["result"]["session_id"].as_str().unwrap();
+ std::thread::sleep(std::time::Duration::from_millis(1500));
+ let status=c.tool("process",json!({"action":"status","session_id":id}));
+ assert_eq!(status["result"]["status"],"exited","{status}");
+}
+#[test] fn catalog_lists_process_once_and_rejects_unknown_tools() {
+ let mut c=Client::new();
+ let found=c.request("search",json!({"query":"process"}));
+ let names:Vec<_>=found["result"]["tools"].as_array().unwrap().iter().map(|s|s["function"]["name"].as_str().unwrap().to_string()).collect();
+ assert_eq!(names.iter().filter(|n|n.as_str()=="process").count(),1,"{names:?}");
+ assert!(names.iter().any(|n|n=="process_manage"),"{names:?}");
+ let unknown=c.tool("not_a_tool",json!({}));
+ assert!(unknown["error"]["message"].as_str().unwrap_or("").contains("Unknown tool"),"{unknown}");
+ assert!(c.tool("mcp__missing__tool",json!({"extra":true}))["error"].is_object());
+}
+#[test] fn skill_names_keep_their_category() {
+ let home=std::env::current_dir().unwrap().join("target/skill-categories");let _=std::fs::remove_dir_all(&home);std::fs::create_dir_all(&home).unwrap();
+ let mut child=Command::new(env!("CARGO_BIN_EXE_hermes-teleoperator-receiver")).env("TELEOPERATOR_HOME",&home).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+ let mut c=Client{input:child.stdin.take(),output:BufReader::new(child.stdout.take().unwrap()),child};
+ let batch=c.tool("skill_manage",json!({"operations":[
+  {"action":"create","name":"sample","category":"widgets","content":"---\nname: sample\ndescription: one\n---\n# One"},
+  {"action":"create","name":"sample","category":"gadgets","content":"---\nname: sample\ndescription: two\n---\n# Two"},
+  {"action":"create","name":"onlyone","category":"widgets","content":"---\nname: onlyone\ndescription: solo\n---\n# Solo"}
+ ]}));
+ assert!(batch["result"].is_object(),"{batch}");
+ let names:Vec<_>=c.tool("skills_list",json!({}))["result"]["skills"].as_array().unwrap().iter().map(|x|x["name"].as_str().unwrap().to_string()).collect();
+ assert!(names.contains(&"widgets/sample".to_string())&&names.contains(&"gadgets/sample".to_string()),"{names:?}");
+ let ambiguous=c.tool("skill_view",json!({"name":"sample"}));
+ assert!(ambiguous["error"]["message"].as_str().unwrap_or("").contains("Ambiguous skill name"),"{ambiguous}");
+ assert!(c.tool("skill_view",json!({"name":"widgets/sample"}))["result"]["content"].as_str().unwrap().contains("# One"));
+ assert!(c.tool("skill_view",json!({"name":"onlyone"}))["result"]["content"].as_str().unwrap().contains("# Solo"));
+ drop(c);std::fs::remove_dir_all(home).unwrap();
+}
+#[test] fn read_file_advances_past_an_oversized_line() {
+ let mut c=Client::new();let p=std::env::current_dir().unwrap().join("target/long-line.txt");
+ let mut content="a".repeat(100_001);content.push_str("\ntail\n");
+ std::fs::write(&p,&content).unwrap();
+ let first=c.tool("read_file",json!({"path":p,"offset":1,"limit":2}));
+ assert_eq!(first["result"]["truncated"],true,"{first}");
+ assert_eq!(first["result"]["next_offset"],1,"{first}");
+ let next_byte=first["result"]["next_byte"].as_u64().unwrap();
+ assert!(next_byte>0,"{first}");
+ let first_text=first["result"]["content"].as_str().unwrap();
+ assert!(first_text.len()<=100_000&&first_text.starts_with("1|"),"{first}");
+ let second=c.tool("read_file",json!({"path":p,"offset":1,"limit":1,"byte_offset":next_byte}));
+ let suffix=second["result"]["content"].as_str().unwrap();
+ assert!(suffix.chars().all(|ch|ch=='a')&&!suffix.is_empty(),"{second}");
+ assert_eq!(first_text.len()-2+suffix.len(),100_001,"{first} {second}");
+ assert_eq!(second["result"]["next_offset"],2,"{second}");
+ assert_eq!(second["result"]["next_byte"],0,"{second}");
+ let third=c.tool("read_file",json!({"path":p,"offset":2,"limit":1}));
+ assert_eq!(third["result"]["content"],"2|tail","{third}");
+ std::fs::remove_file(p).unwrap();
+}
+#[test] fn shell_bookkeeping_cannot_be_forged() {
+ let mut c=Client::new();
+ let setup=c.tool("terminal",json!({"command":"cd /; export TELEOP_TEST=kept"}));
+ assert_eq!(setup["result"]["exit_code"],0,"{setup}");
+ let forged=c.tool("terminal",json!({"command":"readonly __teleoperator_code=0; false"}));
+ assert_eq!(forged["result"]["exit_code"],1,"{forged}");
+ let trap=c.tool("terminal",json!({"command":"trap 'exit 0' EXIT; false"}));
+ assert_eq!(trap["result"]["exit_code"],1,"{trap}");
+ let moved=c.tool("terminal",json!({"command":"pwd() { printf /tmp; }; PWD=/tmp; true"}));
+ assert_eq!(moved["result"]["exit_code"],0,"{moved}");
+ assert_eq!(moved["result"]["cwd"],"/","{moved}");
+ let next=c.tool("terminal",json!({"command":"printf '%s:%s' \"$PWD\" \"$TELEOP_TEST\""}));
+ assert_eq!(next["result"]["output"],"/:kept","{next}");
+ c.tool("terminal",json!({"command":"export TELEOP_UNSET_DEMO=from-parent"}));
+ let cleared=c.tool("terminal",json!({"command":"unset TELEOP_UNSET_DEMO; printf '%s' \"${TELEOP_UNSET_DEMO-inside}\""}));
+ assert_eq!(cleared["result"]["output"],"inside","{cleared}");
+ let still=c.tool("terminal",json!({"command":"printf '%s' \"${TELEOP_UNSET_DEMO-gone}\""}));
+ assert_eq!(still["result"]["output"],"gone","{still}");
+}
+#[test] fn background_exit_kills_orphaned_children() {
+ let mut c=Client::new();
+ let job=c.tool("terminal",json!({"command":"sleep 40 & echo $!","background":true,"timeout":30}));
+ let id=job["result"]["session_id"].as_str().unwrap();
+ std::thread::sleep(std::time::Duration::from_millis(400));
+ let polled=c.tool("process",json!({"action":"poll","session_id":id}));
+ assert_eq!(polled["result"]["status"],"exited","{polled}");
+ let pid:i32=polled["result"]["output"].as_str().unwrap().trim().parse().unwrap();
+ std::thread::sleep(std::time::Duration::from_millis(100));
+ let alive=unsafe{libc::kill(pid,0)};
+ if alive==0{unsafe{libc::kill(pid,libc::SIGKILL);}}
+ assert_eq!(alive,-1,"orphaned sleep {pid} survived poll: {polled}");
+}
+#[test] fn read_file_keeps_blank_lines() {
+ let mut c=Client::new();let p=std::env::current_dir().unwrap().join("target/blank-lines.txt");
+ std::fs::write(&p,"alpha\n\nbeta\n\n").unwrap();
+ let got=c.tool("read_file",json!({"path":p}));
+ assert_eq!(got["result"]["truncated"],false,"{got}");
+ assert_eq!(got["result"]["total_lines"],4,"{got}");
+ assert_eq!(got["result"]["content"],"1|alpha\n2|\n3|beta\n4|","{got}");
+ assert_eq!(got["result"]["next_byte"],0,"{got}");
+ std::fs::remove_file(p).unwrap();
+}
+#[test] fn unset_path_stays_unset() {
+ let mut c=Client::new();
+ let first=c.tool("terminal",json!({"command":"unset PATH; printf '%s' \"${PATH-unset}\""}));
+ assert_eq!(first["result"]["output"],"unset","{first}");
+ assert_eq!(first["result"]["exit_code"],0,"{first}");
+ let second=c.tool("terminal",json!({"command":"printf '%s' \"${PATH-still-unset}\""}));
+ assert_eq!(second["result"]["output"],"still-unset","{second}");
+ let restored=c.tool("terminal",json!({"command":"export PATH=/usr/bin:/bin; printf '%s' \"$PATH\""}));
+ assert_eq!(restored["result"]["output"],"/usr/bin:/bin","{restored}");
+ let kept=c.tool("terminal",json!({"command":"printf '%s' \"$PATH\""}));
+ assert_eq!(kept["result"]["output"],"/usr/bin:/bin","{kept}");
+}
+#[test] fn foreground_command_kills_descendants_when_the_leader_exits() {
+ let mut c=Client::new();
+ let marker=std::env::temp_dir().join(format!("teleop-foreground-child-{}",std::process::id()));
+ let _=std::fs::remove_file(&marker);
+ let command=format!("(sleep 1; printf leaked > '{}') &",marker.display());
+ let ran=c.tool("terminal",json!({"command":command,"timeout":30}));
+ assert_eq!(ran["result"]["exit_code"],0,"{ran}");
+ assert_eq!(ran["result"]["timed_out"],false,"{ran}");
+ std::thread::sleep(std::time::Duration::from_millis(1500));
+ assert!(!marker.exists(),"foreground child wrote {} after the command returned: {ran}",marker.display());
+}
+#[test] fn root_skill_is_not_a_silent_leaf_match_and_deep_paths_are_rejected() {
+ let home=std::env::current_dir().unwrap().join("target/skill-root-depth");let _=std::fs::remove_dir_all(&home);std::fs::create_dir_all(&home).unwrap();
+ let mut child=Command::new(env!("CARGO_BIN_EXE_hermes-teleoperator-receiver")).env("TELEOPERATOR_HOME",&home).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+ let mut c=Client{input:child.stdin.take(),output:BufReader::new(child.stdout.take().unwrap()),child};
+ let batch=c.tool("skill_manage",json!({"operations":[
+  {"action":"create","name":"sample","content":"---\nname: sample\ndescription: root\n---\n# Root"},
+  {"action":"create","name":"sample","category":"widgets","content":"---\nname: sample\ndescription: nested\n---\n# Nested"}
+ ]}));
+ assert!(batch["result"].is_object(),"{batch}");
+ let ambiguous=c.tool("skill_view",json!({"name":"sample"}));
+ let message=ambiguous["error"]["message"].as_str().unwrap_or("");
+ assert!(message.contains("Ambiguous skill name")&&message.contains("./sample"),"{ambiguous}");
+ assert!(c.tool("skill_view",json!({"name":"./sample"}))["result"]["content"].as_str().unwrap().contains("# Root"),"{ambiguous}");
+ assert!(c.tool("skill_view",json!({"name":"widgets/sample"}))["result"]["content"].as_str().unwrap().contains("# Nested"));
+ let deep=(0..16).map(|i|format!("d{i}")).collect::<Vec<_>>().join("/");
+ let rejected=c.tool("skill_manage",json!({"operations":[{"action":"create","name":"leaf","category":deep,"content":"---\nname: leaf\ndescription: deep\n---\n# Deep"}]}));
+ assert!(rejected["error"]["message"].as_str().unwrap_or("").contains("Invalid skill path"),"{rejected}");
+ let names:Vec<_>=c.tool("skills_list",json!({}))["result"]["skills"].as_array().unwrap().iter().map(|x|x["name"].as_str().unwrap().to_string()).collect();
+ assert!(!names.iter().any(|n|n.matches('/').count()>=16),"{names:?}");
+ drop(c);std::fs::remove_dir_all(home).unwrap();
+}

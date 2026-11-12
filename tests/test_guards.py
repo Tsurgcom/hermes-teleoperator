@@ -7,6 +7,7 @@ without a live Hermes install: a remote call executes only after a positive
 verdict, a refusal or an unreachable gate never reaches the machine, and a local
 conversation is untouched.
 """
+import hashlib
 import sys
 import tempfile
 import types
@@ -190,6 +191,42 @@ class RoutingGuardTests(unittest.TestCase):
         self.assertEqual(gate.tools, [])
         self.route('process_manage', {'action': 'kill', 'session_id': 'j1'}, gate)
         self.assertEqual([t[0] for t in gate.tools], ['process_manage'])
+        self.assertEqual(gate.commands, [])
+
+    def test_process_stdin_is_command_gated_per_payload(self):
+        payload = 'rm -rf /srv/build'
+        digest = hashlib.sha256(payload.encode()).hexdigest()
+        gate = Gate()
+        result = self.route('process', {'action': 'submit', 'session_id': 'j1', 'text': payload}, gate)
+        self.assertEqual(result['content'], 'remote:process')
+        self.assertEqual(gate.commands, [(payload, 'ssh')])
+        self.assertEqual(len(gate.tools), 1)
+        self.assertIn(payload, gate.tools[0][1])
+        self.assertIn(digest, gate.tools[0][2])
+        self.assertIn('process:submit:', gate.tools[0][2])
+        other = Gate()
+        self.route('process_manage', {'action': 'write', 'session_id': 'j1', 'data': 'echo kept'}, other)
+        self.assertNotEqual(gate.tools[0][2], other.tools[0][2])
+        blank = Gate()
+        self.route('process', {'action': 'submit', 'session_id': 'j1', 'text': '   '}, blank)
+        self.assertEqual(blank.commands, [])
+        self.assertEqual(len(blank.tools), 1)
+
+    def test_denied_process_stdin_never_asks_for_approval_or_reaches_the_machine(self):
+        gate = Gate(approved=False, verdict={'approved': False, 'message': 'BLOCKED: no'})
+        result = self.route('process_manage',
+                            {'action': 'submit', 'session_id': 'j1', 'text': 'rm -rf /'}, gate)
+        self.assertEqual(result['status'], 'blocked')
+        self.assertEqual(gate.commands, [('rm -rf /', 'ssh')])
+        self.assertEqual(gate.tools, [])
+        self.assertEqual([c for c in self.peer.calls if c[0] == 'tool'], [])
+        both = Gate()
+        blocked = self.route('process', {'action': 'write', 'session_id': 'j1',
+                                         'data': 'echo a', 'text': 'echo b'}, both)
+        self.assertEqual(blocked['status'], 'blocked')
+        self.assertEqual(both.commands, [])
+        self.assertEqual(both.tools, [])
+        self.assertEqual([c for c in self.peer.calls if c[0] == 'tool'], [])
 
     # --- reads ---------------------------------------------------------------
     def test_reads_keep_local_parity_and_are_not_prompted(self):
