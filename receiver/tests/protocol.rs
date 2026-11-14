@@ -71,6 +71,30 @@ impl Drop for Client {fn drop(&mut self){self.input.take();self.child.wait().unw
  let mut c=Client::new();writeln!(c.input.as_mut().unwrap(),"not json").unwrap();let mut line=String::new();c.output.read_line(&mut line).unwrap();assert!(serde_json::from_str::<Value>(&line).unwrap()["error"].is_object());assert_eq!(c.request("ping",json!({}))["result"]["protocol"],2);
  let frame=vec![b'x';16*1024*1024+1];let mut child=Command::new(env!("CARGO_BIN_EXE_hermes-teleoperator-receiver")).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();child.stdin.take().unwrap().write_all(&frame).unwrap();let out=child.wait_with_output().unwrap();let r:Value=serde_json::from_slice(&out.stdout).unwrap();assert_eq!(r["error"]["type"],"FrameTooLarge");
 }
+#[cfg(target_os="linux")]
+#[test] fn refused_skill_mutations_do_not_even_temporarily_create_directories() {
+ use std::os::fd::{AsRawFd,FromRawFd,OwnedFd};
+ use std::os::unix::ffi::OsStrExt;
+ let home=std::env::current_dir().unwrap().join("target/skill-no-transient-dirs");
+ let _=std::fs::remove_dir_all(&home);let root=home.join("skills");let skill=root.join("sample");
+ std::fs::create_dir_all(&skill).unwrap();std::fs::write(skill.join("SKILL.md"),"---\ndescription: original\n").unwrap();
+ let fd=unsafe{libc::inotify_init1(libc::IN_NONBLOCK|libc::IN_CLOEXEC)};assert!(fd>=0);
+ let fd=unsafe{OwnedFd::from_raw_fd(fd)};
+ for p in [&root,&skill] {let p=std::ffi::CString::new(p.as_os_str().as_bytes()).unwrap();assert!(unsafe{libc::inotify_add_watch(fd.as_raw_fd(),p.as_ptr(),libc::IN_CREATE|libc::IN_DELETE)}>0);}
+ let mut child=Command::new(env!("CARGO_BIN_EXE_hermes-teleoperator-receiver")).env("TELEOPERATOR_HOME",&home).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+ let mut c=Client{input:child.stdin.take(),output:BufReader::new(child.stdout.take().unwrap()),child};
+ for operations in [
+  json!([{"action":"create","name":"new","category":"nested","content":"---\ndescription: new\n"}]),
+  json!([{"action":"write_file","name":"sample","file_path":"references/new.md","file_content":"new"}]),
+  json!([{"action":"create","name":"new","content":"---\ndescription: new\n"},{"action":"write_file","name":"new","file_path":"../escape","file_content":"bad"}]),
+  json!([{"action":"patch","name":"sample","old_string":"original","new_string":"changed"},{"action":"write_file","name":"sample","file_path":"references/new.md","file_content":"new"}]),
+ ] {let r=c.tool("skill_manage",json!({"operations":operations}));assert!(r["error"].is_object(),"{r}");}
+ let mut buf=[0u8;4096];let n=unsafe{libc::read(fd.as_raw_fd(),buf.as_mut_ptr().cast(),buf.len())};
+ assert_eq!(n,-1,"refused mutations produced filesystem create/delete events");assert_eq!(std::io::Error::last_os_error().raw_os_error(),Some(libc::EAGAIN));
+ assert_eq!(std::fs::read_to_string(skill.join("SKILL.md")).unwrap(),"---\ndescription: original\n");
+ assert_eq!(std::fs::read_dir(&root).unwrap().count(),1);assert_eq!(std::fs::read_dir(&skill).unwrap().count(),1);
+ drop(c);std::fs::remove_dir_all(home).unwrap();
+}
 #[test] fn skill_batches_validate_before_mutation() {
  let home=std::env::current_dir().unwrap().join("target/skill-rollback");let _=std::fs::remove_dir_all(&home);std::fs::create_dir_all(&home).unwrap();let mut child=Command::new(env!("CARGO_BIN_EXE_hermes-teleoperator-receiver")).env("TELEOPERATOR_HOME",&home).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();let mut c=Client{input:child.stdin.take(),output:BufReader::new(child.stdout.take().unwrap()),child};
  let r=c.tool("skill_manage",json!({"operations":[{"action":"create","name":"rollback","content":"---\nname: rollback\ndescription: test\n---\nTest"},{"action":"write_file","name":"rollback","file_path":"../outside","file_content":"bad"}]}));assert!(r["error"].is_object());assert!(!home.join("skills/rollback").exists());drop(c);std::fs::remove_dir_all(home).unwrap();

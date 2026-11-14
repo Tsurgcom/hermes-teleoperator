@@ -35,7 +35,9 @@ fn manage(v:&Value)->Result<Value,String>{args(v,&["operations"])?;let ops=v.get
  _=>return Err(format!("Unsupported skill action: {action}; delete/full replacement are unavailable"))}}
  // Multiple distinct files cannot be atomically committed or safely rolled back.
  if staged.len()>1{return Err("Multi-file skill batches are unavailable: atomic rollback cannot be guaranteed".into());}
- let mut made_dirs=Vec::new();let result=(||{for(p,content)in &staged{no_symlinks(p)?;if let Some(content)=content{let mut missing=Vec::new();let mut d=p.parent().unwrap();while !d.exists(){missing.push(d.to_path_buf());d=d.parent().ok_or("Missing parent")?;}for d in missing.into_iter().rev(){fs::create_dir(&d).map_err(|e|e.to_string())?;made_dirs.push(d);}crate::files::replace(p,content)?;}else{fs::remove_file(p).map_err(|e|e.to_string())?;}}Ok::<(),String>(())})();if let Err(e)=result{for d in made_dirs.into_iter().rev(){let _=fs::remove_dir(d);}return Err(e);}Ok(json!({"success":true,"operations":ops.len(),"files_modified":staged.keys().collect::<Vec<_>>()}))}
+ // Publication and conditional deletion are unavailable. Never create or clean up
+ // directories for an operation that cannot be safely committed.
+ Err("Skill mutations are unavailable: safe atomic publication and deletion are not supported".into())}
 
 #[cfg(test)]
 mod tests {
