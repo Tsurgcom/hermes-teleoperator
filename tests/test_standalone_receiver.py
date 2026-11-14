@@ -1,7 +1,8 @@
 """Black-box protocol tests for the standalone binary, never a Python companion.
 
 Build receiver/ in release mode or set TELEOPERATOR_RECEIVER to an absolute
-binary path. The chroot test additionally requires Linux root and chroot/ldd.
+binary path. The chroot test additionally requires Linux root, mount capability,
+and chroot/ldd.
 Python is the test driver only; it is deliberately absent inside the chroot.
 """
 import base64
@@ -33,9 +34,12 @@ def receiver_available():
 @unittest.skipUnless(receiver_available(), MISSING_RECEIVER)
 class StandaloneReceiverTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(prefix='teleoperator-standalone-')
-        self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
+        self.root = Path(tempfile.mkdtemp(prefix='teleoperator-standalone-'))
+        def cleanup_root():
+            if os.path.ismount(self.root / 'jail/proc'):
+                raise RuntimeError('procfs still mounted; refusing unsafe temporary directory cleanup')
+            shutil.rmtree(self.root)
+        self.addCleanup(cleanup_root)
         self.home = self.root / 'home'
         self.config = self.root / 'config'
         self.home.mkdir()
@@ -242,18 +246,24 @@ class StandaloneReceiverTests(unittest.TestCase):
 
         copy_executable(RECEIVER, '/receiver')
         copy_executable('/bin/bash', '/bin/bash')
+        # Foreground shell bookkeeping uses bash builtins, so no coreutils are copied.
         for directory in ('home/isolated', 'config', 'dev', 'usr/bin'):
             (jail / directory).mkdir(parents=True, exist_ok=True)
         (jail / 'dev/null').touch()
         (jail / 'home/isolated/proof.txt').write_text('RUST_ONLY')
         self.assertFalse((jail / 'usr/bin/python3').exists())
         self.assertFalse(list(jail.rglob('model_tools*')))
+        proc = jail / 'proc'
+        proc.mkdir()
+        subprocess.run(['mount', '-t', 'proc', 'proc', str(proc)], check=True)
+        self.addCleanup(subprocess.run, ['umount', str(proc)], check=True)
         env = {'HOME': '/home/isolated', 'TELEOPERATOR_HOME': '/config', 'PATH': '/bin:/usr/bin'}
         with RpcProcess([shutil.which('chroot'), str(jail), '/receiver'], env=env, timeout=10) as rpc:
             self.assertEqual(rpc.call('ping')['runtime'], 'standalone-rust')
             result = rpc.call('tool', {'name': 'terminal', 'arguments': {
                 'command': 'for tool in python python3 hermes; do if command -v "$tool"; then exit 91; fi; done; printf NO_HERMES_OR_PYTHON'}})
             self.assertEqual(result['exit_code'], 0, result)
+            self.assertFalse(result['shell_reset'], result)
             self.assertEqual(result['output'], 'NO_HERMES_OR_PYTHON')
             with self.assertRaises(TransportError):
                 rpc.call('tool', {'name': 'write_file', 'arguments': {

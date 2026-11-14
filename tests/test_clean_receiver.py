@@ -1,9 +1,10 @@
 """Clean receiver root: no Hermes, Python, Node, Bun, Cargo or network access required.
 
 The test runner is Python on the gateway. Its chroot child sees only the explicitly
-copied Bash/coreutils runtime and receiver. No host Python libraries are mounted.
+copied Bash/coreutils runtime, receiver, and procfs. No host Python libraries are mounted.
 """
 import hashlib
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -19,12 +20,28 @@ ROOT = Path(__file__).resolve().parents[1]
 BINARY = Path(os.environ.get('TELEOPERATOR_RECEIVER', str(ROOT / 'receiver/target/release/hermes-teleoperator-receiver')))
 
 
+@contextmanager
+def clean_root():
+    jail = Path(tempfile.mkdtemp())
+    proc = jail / 'proc'
+    proc.mkdir()
+    mounted = False
+    try:
+        subprocess.run(['mount', '-t', 'proc', 'proc', str(proc)], check=True)
+        mounted = True
+        yield jail
+    finally:
+        if mounted:
+            # If unmount fails, preserve the directory rather than traversing procfs.
+            subprocess.run(['umount', str(proc)], check=True)
+        shutil.rmtree(jail)
+
+
 @unittest.skipUnless(os.geteuid() == 0 and shutil.which('chroot') and BINARY.is_file(),
                      'requires built standalone receiver, root and chroot')
 class CleanReceiverTests(unittest.TestCase):
     def test_install_shell_skills_transfer_and_mcp_without_hermes_or_python(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            jail = Path(tmp)
+        with clean_root() as jail:
 
             def copy_program(program):
                 source = Path(shutil.which(program))
@@ -47,7 +64,7 @@ class CleanReceiverTests(unittest.TestCase):
                 copy_program(program)
             # Linux may use /bin as a merged-/usr symlink; preserve both entry paths.
             (jail / 'bin').mkdir(exist_ok=True)
-            for name in ('bash', 'sh', 'sleep', 'cat', 'mkdir'):
+            for name in ('bash', 'sh', 'sleep', 'cat', 'mkdir', 'pwd'):
                 target = jail / 'bin' / name
                 if not target.exists():
                     target.symlink_to('/usr/bin/' + name)
@@ -109,6 +126,8 @@ done
                     return peer.call('tool', {'name': name, 'arguments': arguments})
                 shell = tool('terminal', {'command': 'export CLEAN_STATE=yes; cd /home/target; printf CLEAN_SHELL_OK'})
                 self.assertIn('CLEAN_SHELL_OK', json.dumps(shell))
+                self.assertEqual(shell['exit_code'], 0, shell)
+                self.assertFalse(shell['shell_reset'], shell)
                 self.assertIn('yes', json.dumps(tool('terminal', {'command': 'printf "$CLEAN_STATE"; pwd'})))
                 self.assertIn('clean-skill', json.dumps(tool('skills_list', {})))
                 self.assertIn('NO_HERMES_INSTALLED', json.dumps(tool('skill_view', {'name': 'clean-skill'})))
